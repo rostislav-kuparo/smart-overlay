@@ -20,6 +20,7 @@ from PySide6.QtCore import QObject, Signal
 from .audio import LoopbackCapture, PhraseSegmenter, SileroVAD
 from .detector import looks_like_question
 from .gemini_client import GeminiClient
+from .i18n import msg
 from .screenshot import grab_screen
 from .transcriber import Transcriber
 
@@ -57,6 +58,7 @@ class Pipeline:
         self._last_question = ("", 0.0)
         self._gemini: GeminiClient | None = None
         self._audio_thread: threading.Thread | None = None
+        self._listening = False  # модель загружена и звук захватывается
 
     # ---------- управление ----------
 
@@ -70,21 +72,28 @@ class Pipeline:
             self._audio_thread.join(timeout=2)  # даём закрыть аудиопоток до выхода интерпретатора
 
     def update_config(self, cfg: dict) -> None:
-        """Применяет настройки, не требующие перезагрузки модели (Gemini, промпты, скриншот, детектор)."""
+        """Применяет настройки, не требующие перезагрузки модели (Gemini, пресет, скриншот, детектор)."""
         self._cfg = cfg
         self._gemini = None
 
-    @property
-    def paused(self) -> bool:
-        return self._paused.is_set()
-
-    def toggle_pause(self) -> None:
-        if self._paused.is_set():
-            self._paused.clear()
-            self._status("Слушаю", "ok")
-        else:
+    def set_paused(self, paused: bool) -> None:
+        if paused:
             self._paused.set()
-            self._status("Пауза — звук не обрабатывается", "idle")
+        else:
+            self._paused.clear()
+        self.refresh_status()
+
+    def refresh_status(self) -> None:
+        """Показывает обычное состояние (слушаю / пауза) — например, после смены языка или режима."""
+        if self._listening:
+            self._status(*self._idle_status())
+
+    def _idle_status(self) -> tuple[str, str]:
+        if self._paused.is_set():
+            return msg("status.paused"), "idle"
+        if not self._cfg["detector"]["auto_answer"]:
+            return msg("status.listening_manual"), "ok"
+        return msg("status.listening"), "ok"
 
     def ask_now(self) -> None:
         """Ручной запрос по горячей клавише: последний вопрос из разговора или то, что на экране."""
@@ -93,7 +102,7 @@ class Pipeline:
     # ---------- потоки ----------
 
     def _run_asr(self) -> None:
-        self._status("Загрузка модели распознавания (при первом запуске — скачивание, несколько минут)…", "busy")
+        self._status(msg("status.loading_model"), "busy")
         transcriber = self._load_transcriber()
         if transcriber is None or self._stop.is_set():
             return
@@ -116,24 +125,25 @@ class Pipeline:
             log.info("Фраза (%.1f c звука, распознано за %.2f c): %s", len(audio) / 16000, time.monotonic() - started, text)
             lines = self._remember(text)
             self._events.transcript.emit(text)
-            if looks_like_question(text):
+            if self._cfg["detector"]["auto_answer"] and looks_like_question(text):
                 self._workers.submit(self._on_candidate, lines, ended_at)
 
     def _load_transcriber(self) -> Transcriber | None:
         w = self._cfg["whisper"]
+        language = self._cfg["language"]["speech"]
         try:
-            return Transcriber(w["model"], w["device"], w["compute_type"], w["language"], w["beam_size"])
+            return Transcriber(w["model"], w["device"], w["compute_type"], language, w["beam_size"])
         except Exception as e:
             log.exception("Whisper не запустился на %s", w["device"])
             if w["device"] == "cpu":
-                self._status(f"Whisper не запустился: {e}", "error")
+                self._status(msg("status.whisper_failed", error=e), "error")
                 return None
-        self._status("GPU недоступен — распознаю на процессоре (медленнее)…", "busy")
+        self._status(msg("status.cpu_fallback"), "busy")
         try:
-            return Transcriber(w["model"], "cpu", "int8", w["language"], w["beam_size"])
+            return Transcriber(w["model"], "cpu", "int8", language, w["beam_size"])
         except Exception as e:
             log.exception("Whisper не запустился и на CPU")
-            self._status(f"Whisper не запустился: {e}", "error")
+            self._status(msg("status.whisper_failed", error=e), "error")
             return None
 
     def _run_audio(self) -> None:
@@ -146,9 +156,10 @@ class Pipeline:
             capture.start()
         except Exception as e:
             log.exception("Не удалось начать захват звука")
-            self._status(f"Нет доступа к звуку: {e}", "error")
+            self._status(msg("status.no_audio", error=e), "error")
             return
-        self._status("Слушаю", "ok")
+        self._listening = True
+        self.refresh_status()
         try:
             while not self._stop.is_set():
                 chunk = capture.read(timeout=0.1)
@@ -176,7 +187,7 @@ class Pipeline:
                 question = gemini.check_question(transcript)
             except Exception as e:
                 log.exception("Ошибка проверки вопроса")
-                self._status(f"Gemini: {e}", "error")
+                self._status(msg("status.gemini_error", error=e), "error")
                 return
             log.info("Проверка вопроса за %.2f c → %s", time.monotonic() - started, question or "не вопрос")
             if not question:
@@ -209,8 +220,8 @@ class Pipeline:
             except Exception:
                 log.exception("Скриншот не удался — спрашиваю без него")
 
-        self._events.question.emit(answer_id, question or "Ручной запрос: последний вопрос или то, что на экране")
-        self._status("Думаю…", "busy")
+        self._events.question.emit(answer_id, question or msg("overlay.manual_question"))
+        self._status(msg("status.thinking"), "busy")
         first_chunk = True
         try:
             for chunk in gemini.answer(self._build_request(question), screenshot):
@@ -222,10 +233,10 @@ class Pipeline:
                 self._events.answer_chunk.emit(answer_id, chunk)
         except Exception as e:
             log.exception("Ошибка ответа Gemini")
-            self._status(f"Gemini: {e}", "error")
+            self._status(msg("status.gemini_error", error=e), "error")
             return
         if answer_id == self._answer_id:
-            self._status(*(("Пауза — звук не обрабатывается", "idle") if self._paused.is_set() else ("Слушаю", "ok")))
+            self.refresh_status()
 
     def _build_request(self, question: str | None) -> str:
         lines = self._recent_lines()
@@ -242,10 +253,10 @@ class Pipeline:
     def _get_gemini(self) -> GeminiClient | None:
         if self._gemini is None:
             try:
-                self._gemini = GeminiClient(self._cfg["gemini"], self._cfg["prompts"])
+                self._gemini = GeminiClient(self._cfg)
             except Exception as e:
                 log.error("Gemini: %s", e)
-                self._status(f"Gemini: {e}", "error")
+                self._status(msg("status.gemini_error", error=e), "error")
                 return None
         return self._gemini
 

@@ -19,7 +19,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from .config import CONFIG_PATH, LOCAL_DIR, LOG_PATH, restart_needed, save_config, schema_json, validate
+from .config import CONFIG_PATH, LOCAL_DIR, LOG_PATH, ConfigStore, restart_needed, schema_json, validate
+from .i18n import get_language, msg, web_messages
 
 log = logging.getLogger(__name__)
 
@@ -28,6 +29,13 @@ STATIC_FILES = {
     "/": (PACKAGE_DIR / "web" / "settings.html", "text/html; charset=utf-8"),
     "/icon.png": (PACKAGE_DIR / "assets" / "icon.png", "image/png"),
 }
+CONTROLS = ("listening", "overlay_visible", "move_mode")
+
+
+class _Rejected(Exception):
+    def __init__(self, errors: dict[str, str]):
+        super().__init__("validation failed")
+        self.errors = errors
 
 
 def _find_edge() -> str | None:
@@ -48,7 +56,7 @@ def open_app_window(url: str) -> None:
         [
             edge,
             f"--app={url}",
-            "--window-size=980,900",
+            "--window-size=1000,920",
             f"--user-data-dir={LOCAL_DIR / 'webui'}",
             "--no-first-run",
             "--no-default-browser-check",
@@ -61,16 +69,17 @@ def open_app_window(url: str) -> None:
 class SettingsServer:
     def __init__(
         self,
-        get_config: Callable[[], dict],
-        on_saved: Callable[[dict], None],
-        get_status: Callable[[], tuple[str, str]],
+        store: ConfigStore,
+        on_changed: Callable[[dict, dict], None],
+        get_status: Callable[[], dict],
+        on_control: Callable[[str, bool], None],
         set_hotkeys_enabled: Callable[[bool], None],
     ):
-        self._get_config = get_config
-        self._on_saved = on_saved
+        self._store = store
+        self._on_changed = on_changed
         self._get_status = get_status
+        self._on_control = on_control
         self._set_hotkeys_enabled = set_hotkeys_enabled
-        self._save_lock = threading.Lock()
         self.token = secrets.token_urlsafe(18)
         self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
         self._httpd.daemon_threads = True
@@ -95,12 +104,15 @@ class SettingsServer:
     # ---------- API ----------
 
     def get_settings(self) -> dict:
-        cfg = self._get_config()
+        cfg = self._store.get()
         values = copy.deepcopy(cfg)
         values["gemini"]["api_key"] = None  # сам ключ в браузер не отдаём
         return {
             "schema": schema_json(),
             "values": values,
+            "version": self._store.version,
+            "language": get_language(),
+            "messages": web_messages(),
             "api_key_set": bool(cfg["gemini"]["api_key"]),
             "api_key_env": bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")),
             "config_path": str(CONFIG_PATH),
@@ -119,45 +131,57 @@ class SettingsServer:
         return {"audio": audio, "monitors": list_monitors()}
 
     def get_status(self) -> dict:
-        text, kind = self._get_status()
-        return {"text": text, "kind": kind}
+        return self._get_status()
 
     def save_settings(self, body: dict) -> tuple[int, dict]:
-        with self._save_lock:
-            current = self._get_config()
-            new, errors = validate(body.get("values") or {}, current)
+        """Принимает только изменённые поля — так правки из трея и мыши не затираются старыми значениями."""
+
+        def change(cfg: dict) -> dict:
+            new, errors = validate(body.get("values") or {}, cfg)
             if errors:
-                return 400, {"ok": False, "errors": errors}
-            save_config(new)
-            restart = restart_needed(current, new)
-            self._on_saved(new)
+                raise _Rejected(errors)
+            return new
+
+        try:
+            old, new = self._store.update(change)
+        except _Rejected as e:
+            return 400, {"ok": False, "errors": e.errors}
+        self._on_changed(old, new)
+        restart = restart_needed(old, new)
         log.info("Настройки сохранены%s", " — перезапуск распознавания" if restart else "")
-        return 200, {"ok": True, "restart": restart}
+        return 200, {"ok": True, "restart": restart, "version": self._store.version}
 
-    def test_gemini(self, body: dict) -> dict:
-        from .gemini_client import ping
+    def control(self, body: dict) -> tuple[int, dict]:
+        name = body.get("name")
+        if name not in CONTROLS:
+            return 400, {"ok": False}
+        self._on_control(name, bool(body.get("value")))
+        return 200, {"ok": True}
 
-        cfg = self._get_config()["gemini"]
-        key = body.get("api_key") or cfg["api_key"] or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    def test_gemini(self, body: dict) -> tuple[int, dict]:
+        from .gemini_client import ping, resolve_api_key
+
+        cfg = self._store.get()["gemini"]
+        key = body.get("api_key") or resolve_api_key(cfg)
         model = body.get("model") or cfg["answer_model"]
         if not key:
-            return {"ok": False, "message": "Ключ не задан"}
+            return 200, {"ok": False, "message": msg("test.no_key")}
         started = time.monotonic()
         try:
             ping(key, model)
         except Exception as e:
-            return {"ok": False, "message": str(e)[:300]}
-        return {"ok": True, "message": f"Ключ работает: {model} ответила за {time.monotonic() - started:.1f} с"}
+            return 200, {"ok": False, "message": str(e)[:300]}
+        return 200, {"ok": True, "message": msg("test.ok", model=model, seconds=f"{time.monotonic() - started:.1f}")}
 
-    def set_hotkeys(self, body: dict) -> dict:
+    def set_hotkeys(self, body: dict) -> tuple[int, dict]:
         # Пока пользователь записывает сочетание, наши глобальные клавиши отключены — иначе Windows
         # отдаст нажатие программе, а не странице настроек.
         self._set_hotkeys_enabled(bool(body.get("enabled", True)))
-        return {"ok": True}
+        return 200, {"ok": True}
 
-    def open_settings(self, body: dict) -> dict:
+    def open_settings(self, body: dict) -> tuple[int, dict]:
         self.open_window()
-        return {"ok": True}
+        return 200, {"ok": True}
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -194,8 +218,7 @@ class _Handler(BaseHTTPRequestHandler):
             return self._send(403, b"Forbidden", "text/plain")
         if url.path in STATIC_FILES:
             if url.path == "/" and not self._token_ok(parse_qs(url.query).get("t", [""])[0]):
-                message = "Откройте настройки через значок Smart Overlay в трее."
-                return self._send(403, message.encode(), "text/plain; charset=utf-8")
+                return self._send(403, msg("server.open_from_tray").encode(), "text/plain; charset=utf-8")
             path, content_type = STATIC_FILES[url.path]
             return self._send(200, path.read_bytes(), content_type)
         if not self._token_ok(self.headers.get("X-Token")):
@@ -218,13 +241,13 @@ class _Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(length) or b"{}")
         except ValueError:
             return self._json(400, {"ok": False, "error": "bad json"})
-        if url.path == "/api/settings":
-            return self._json(*self.owner.save_settings(body))
         routes = {
+            "/api/settings": self.owner.save_settings,
+            "/api/control": self.owner.control,
             "/api/test-gemini": self.owner.test_gemini,
             "/api/hotkeys": self.owner.set_hotkeys,
             "/api/open-settings": self.owner.open_settings,
         }
         if url.path not in routes:
             return self._json(404, {"ok": False})
-        self._json(200, routes[url.path](body))
+        self._json(*routes[url.path](body))

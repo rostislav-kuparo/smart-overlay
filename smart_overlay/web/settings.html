@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Smart Overlay — настройки</title>
+<title>Smart Overlay</title>
 <link rel="icon" href="/icon.png">
 <style>
   :root {
@@ -27,7 +27,7 @@
            border-bottom: 1px solid var(--border); }
   header img { width: 28px; height: 28px; }
   header h1 { margin: 0; font-size: 16px; font-weight: 600; white-space: nowrap; }
-  .status { display: inline-flex; align-items: center; gap: 7px; min-width: 0; max-width: 420px; padding: 3px 11px;
+  .status { display: inline-flex; align-items: center; gap: 7px; min-width: 0; max-width: 460px; padding: 3px 11px;
             border: 1px solid var(--border); border-radius: 999px; background: var(--panel); color: var(--muted);
             font-size: 12.5px; }
   .status span:last-child { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
@@ -47,9 +47,12 @@
   nav a:hover, nav a.active { background: var(--hover); color: var(--text); }
   section { margin-bottom: 18px; padding: 4px 20px 6px; border: 1px solid var(--border); border-radius: 12px;
             background: var(--panel); scroll-margin-top: 80px; }
+  section#control { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
   section h2 { display: flex; align-items: center; gap: 10px; margin: 14px 0 2px; font-size: 15px; }
   .badge { padding: 0 8px; border: 1px solid currentColor; border-radius: 999px; color: var(--warn);
-           font-size: 11px; font-weight: 500; }
+           font-size: 11px; font-weight: 500; white-space: nowrap; }
+  .badge.accent { color: var(--accent); }
+  label .badge { margin-left: 8px; }
   .section-desc { margin: 2px 0 4px; color: var(--muted); font-size: 12.5px; }
   .field { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 8px 24px; align-items: center;
            padding: 13px 0; border-top: 1px solid var(--border); }
@@ -81,6 +84,14 @@
   .result { width: 100%; font-size: 12.5px; }
   .result.ok { color: var(--ok); }
   .result.fail { color: var(--danger); }
+  .preset-list { display: flex; flex-direction: column; gap: 12px; margin: 10px 0 12px; }
+  .preset { padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); }
+  .preset.active { border-color: var(--accent); }
+  .preset-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .preset-head input { flex: 1; font-weight: 600; }
+  .preset textarea { min-height: 96px; font: inherit; }
+  .preset-actions { padding-bottom: 14px; }
+  .empty { margin: 4px 0; color: var(--muted); }
   footer { padding: 0 0 30px; color: var(--muted); font-size: 12px; }
   footer code { user-select: all; overflow-wrap: anywhere; }
   .toast { position: fixed; left: 50%; bottom: 22px; padding: 10px 16px; border-radius: 10px; background: var(--text);
@@ -101,14 +112,14 @@
 <header>
   <img src="/icon.png" alt="">
   <h1>Smart Overlay</h1>
-  <span class="status" title="Состояние программы"><span class="dot" id="status-dot"></span><span id="status-text">…</span></span>
+  <span class="status"><span class="dot" id="status-dot"></span><span id="status-text">…</span></span>
   <span class="spacer"></span>
-  <button id="revert" disabled>Отменить</button>
-  <button id="save" class="primary" disabled title="Ctrl+S">Сохранить</button>
+  <button id="revert" disabled></button>
+  <button id="save" class="primary" disabled title="Ctrl+S"></button>
 </header>
 <div class="layout">
   <nav id="nav"></nav>
-  <main id="main"><div class="loading">Загрузка…</div></main>
+  <main id="main"><div class="loading">…</div></main>
 </div>
 <div class="toast" id="toast"></div>
 
@@ -118,8 +129,15 @@ const STATUS_COLORS = { ok: "var(--ok)", busy: "var(--warn)", idle: "var(--muted
 const KEY_NAMES = { ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right", Space: "space",
   Enter: "enter", Escape: "esc", Tab: "tab", PageUp: "pageup", PageDown: "pagedown", Home: "home", End: "end",
   Insert: "insert", Delete: "delete" };
+// Порядок строк на панели «Управление»: runtime — состояние программы, остальное — поля настроек
+const CONTROL_ROWS = [["runtime", "listening"], ["detector", "auto_answer"], ["screenshot", "enabled"],
+  ["detector", "use_llm_check"], ["runtime", "overlay_visible"], ["overlay", "click_through"],
+  ["overlay", "show_transcript"], ["runtime", "move_mode"]];
+const RUNTIME_TEXT = { listening: ["listening", "listening_help"], overlay_visible: ["overlay_visible", ""],
+  move_mode: ["move_window", "move_help"] };
 
-let schema = [], saved = {}, values = {}, devices = { audio: [], monitors: [] }, meta = {};
+let schema = [], saved = {}, values = {}, devices = { audio: [], monitors: [] }, meta = {}, M = {};
+let runtime = {}, version = -1;
 
 async function api(path, body) {
   const response = await fetch(path, {
@@ -144,7 +162,23 @@ function el(tag, attrs = {}, ...children) {
 }
 
 const clone = (obj) => JSON.parse(JSON.stringify(obj));
-const isDirty = () => JSON.stringify(values) !== JSON.stringify(saved);
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const sectionOf = (key) => schema.find((s) => s.key === key);
+const fieldOf = (section, key) => sectionOf(section).fields.find((f) => f.key === key);
+
+// Только изменённые поля: так сохранение не затирает то, что поменяли в трее или мышью
+function diff() {
+  const changes = {};
+  for (const section of schema) {
+    for (const field of section.fields) {
+      const value = values[section.key][field.key];
+      const changed = field.type === "secret" ? Boolean(value) : !same(value, saved[section.key][field.key]);
+      if (changed) (changes[section.key] ||= {})[field.key] = value;
+    }
+  }
+  return changes;
+}
+const isDirty = () => Object.keys(diff()).length > 0;
 
 function updateDirty() {
   const dirty = isDirty();
@@ -160,31 +194,138 @@ function toast(text) {
   toast.timer = setTimeout(() => node.classList.remove("show"), 2800);
 }
 
-async function load() {
-  const [settings, deviceList] = await Promise.all([api("/api/settings"), api("/api/devices")]);
+function accept(settings) {
   schema = settings.schema;
+  meta = settings;
+  M = settings.messages;
+  version = settings.version;
   saved = settings.values;
   values = clone(saved);
+  document.documentElement.lang = settings.language;
+  document.title = M.title;
+  document.getElementById("save").textContent = M.save;
+  document.getElementById("revert").textContent = M.revert;
+  document.querySelector(".status").title = M.status_title;
+}
+
+async function load() {
+  const [settings, deviceList, status] = await Promise.all([api("/api/settings"), api("/api/devices"), api("/api/status")]);
   devices = deviceList;
-  meta = settings;
+  runtime = status.runtime;
+  accept(settings);
   render();
 }
 
 function render() {
-  document.getElementById("nav").replaceChildren(...schema.map((s) => el("a", { href: "#" + s.key }, s.title)));
+  const scroll = window.scrollY;
+  const sections = schema.filter((s) => s.key !== "presets");
+  const nav = [["control", M.control], ["presets", sectionOf("presets").title], ...sections.map((s) => [s.key, s.title])];
+  document.getElementById("nav").replaceChildren(...nav.map(([key, title]) => el("a", { href: "#" + key }, title)));
   const footer = el("footer", {},
-    "Файл настроек: ", el("code", {}, meta.config_path), el("br"), "Журнал: ", el("code", {}, meta.log_path));
-  document.getElementById("main").replaceChildren(...schema.map(renderSection), footer);
+    M.config_file, " ", el("code", {}, meta.config_path), el("br"), M.log_file, " ", el("code", {}, meta.log_path));
+  document.getElementById("main").replaceChildren(
+    renderControls(), renderPresets(), ...sections.map(renderSection).filter(Boolean), footer);
   updateDirty();
   observeSections();
+  window.scrollTo(0, scroll);
 }
 
+// ---------- «Управление»: применяется сразу ----------
+
+function renderControls() {
+  const presetField = fieldOf("presets", "active");
+  const options = [["", M.preset_none], ...saved.presets.items.map((p) => [p.name, p.name])];
+  const presetSelect = el("select", { id: "control-preset",
+    onchange: (e) => instant("presets", "active", e.target.value, () => { e.target.value = saved.presets.active; }) },
+    options.map(([value, label]) => el("option", { value, selected: value === saved.presets.active }, label)));
+
+  const rows = CONTROL_ROWS.map(([section, key]) => {
+    const id = `control-${section}-${key}`;
+    let label, help, checked, onchange;
+    if (section === "runtime") {
+      [label, help] = RUNTIME_TEXT[key].map((name) => (name ? M[name] : ""));
+      checked = Boolean(runtime[key]);
+      onchange = (e) => control(key, e.target.checked, e.target);
+    } else {
+      const field = fieldOf(section, key);
+      [label, help, checked] = [field.label, field.help, saved[section][key]];
+      onchange = (e) => instant(section, key, e.target.checked, () => { e.target.checked = !e.target.checked; });
+    }
+    return controlRow(id, label, help,
+      el("label", { class: "switch" }, el("input", { type: "checkbox", id, checked, onchange }), el("span")));
+  });
+  return el("section", { id: "control" },
+    el("h2", {}, M.control), el("p", { class: "section-desc" }, M.control_desc),
+    controlRow("control-preset", presetField.label, "", presetSelect), rows);
+}
+
+function controlRow(id, label, help, control) {
+  return el("div", { class: "field" },
+    el("div", {}, el("label", { htmlFor: id }, label), help ? el("div", { class: "help" }, help) : null),
+    el("div", { class: "control" }, control));
+}
+
+async function instant(section, key, value, undo) {
+  const reply = await api("/api/settings", { values: { [section]: { [key]: value } } }).catch(() => ({ ok: false }));
+  if (!reply.ok) { undo(); toast(M.apply_failed); return; }
+  saved[section][key] = value;
+  values[section][key] = value;
+  version = reply.version;
+  if (section === "presets") document.getElementById("presets").replaceWith(renderPresets());
+  updateDirty();
+}
+
+async function control(name, value, input) {
+  const reply = await api("/api/control", { name, value }).catch(() => ({ ok: false }));
+  if (!reply.ok) { input.checked = !value; toast(M.apply_failed); return; }
+  runtime[name] = value;
+}
+
+// ---------- пресеты ----------
+
+function renderPresets() {
+  const section = sectionOf("presets");
+  const list = el("div", { class: "preset-list" });
+  const card = (preset, index) => {
+    const id = `presets.items.${index}.name`;
+    const active = preset.name !== "" && preset.name === saved.presets.active;
+    return el("div", { class: "preset" + (active ? " active" : "") },
+      el("div", { class: "preset-head" },
+        el("input", { type: "text", id, value: preset.name, placeholder: M.preset_name_ph, maxLength: 60, spellcheck: false,
+          oninput: (e) => { preset.name = e.target.value; updateDirty(); } }),
+        active ? el("span", { class: "badge accent" }, M.preset_active) : null,
+        el("button", { type: "button", onclick: () => { values.presets.items.splice(index, 1); draw(); updateDirty(); } },
+          M.preset_delete)),
+      el("div", { class: "error", id: "error-" + id }),
+      el("textarea", { rows: 5, value: preset.context, placeholder: M.preset_context_ph,
+        oninput: (e) => { preset.context = e.target.value; updateDirty(); } }));
+  };
+  const draw = () => {
+    const items = values.presets.items;
+    list.replaceChildren(...(items.length ? items.map(card) : [el("p", { class: "empty" }, M.preset_empty)]));
+  };
+  draw();
+  const add = el("button", { type: "button", onclick: () => {
+    values.presets.items.push({ name: "", context: "" });
+    draw();
+    updateDirty();
+    document.getElementById(`presets.items.${values.presets.items.length - 1}.name`).focus();
+  } }, "+ " + M.preset_add);
+  return el("section", { id: "presets" },
+    el("h2", {}, section.title), el("p", { class: "section-desc" }, section.description),
+    list, el("div", { class: "preset-actions" }, add));
+}
+
+// ---------- обычные разделы ----------
+
 function renderSection(section) {
+  const fields = section.fields.filter((f) => !f.quick && f.type !== "hidden");
+  if (!fields.length) return null;
   return el("section", { id: section.key },
     el("h2", {}, section.title,
-      section.restart ? el("span", { class: "badge", title: "После сохранения модель распознавания перезагрузится, это ~10 секунд" }, "перезапуск распознавания") : null),
+      section.restart ? el("span", { class: "badge", title: M.restart_title }, M.restart_badge) : null),
     section.description ? el("p", { class: "section-desc" }, section.description) : null,
-    section.fields.map((field) => renderField(section, field)));
+    fields.map((field) => renderField(section, field)));
 }
 
 function renderField(section, field) {
@@ -193,9 +334,11 @@ function renderField(section, field) {
     get: () => values[section.key][field.key],
     set: (value) => { values[section.key][field.key] = value; updateDirty(); },
   };
+  const badge = field.restart && !section.restart
+    ? el("span", { class: "badge", title: M.restart_title }, M.restart_badge) : null;
   return el("div", { class: "field" + (field.type === "textarea" ? " wide" : "") },
     el("div", {},
-      el("label", { htmlFor: id }, field.label),
+      el("label", { htmlFor: id }, field.label, badge),
       field.help ? el("div", { class: "help" }, field.help) : null,
       el("div", { class: "error", id: "error-" + id })),
     el("div", { class: "control" }, buildControl(field, id, binding)));
@@ -212,7 +355,8 @@ function buildControl(field, id, { get, set }) {
       const parse = (v) => (field.type === "int" ? parseInt(v, 10) : parseFloat(v));
       // value — последним: иначе ползунок обрежет его до стандартного диапазона 0–100 ещё до min/max
       const number = el("input", { type: "number", id, min: field.min, max: field.max, step: field.step, value: get() });
-      const range = el("input", { type: "range", min: field.min, max: field.max, step: field.step, tabIndex: -1, "aria-hidden": "true", value: get() });
+      const range = el("input", { type: "range", min: field.min, max: field.max, step: field.step, tabIndex: -1,
+        "aria-hidden": "true", value: get() });
       number.addEventListener("input", () => { if (!isNaN(parse(number.value))) { range.value = number.value; set(parse(number.value)); } });
       range.addEventListener("input", () => { number.value = range.value; set(parse(range.value)); });
       return [range, number];
@@ -220,12 +364,12 @@ function buildControl(field, id, { get, set }) {
 
     case "select":
       return el("select", { id, onchange: (e) => set(e.target.value) },
-        field.options.map(([value, label]) => el("option", { value, selected: value === get() }, label || value)));
+        field.options.map(([value, label]) => el("option", { value, selected: value === get() }, label)));
 
     case "audio_device": {
-      const options = [["", "Устройство по умолчанию в Windows"],
+      const options = [["", M.device_default],
         ...devices.audio.map((name) => [name, name.replace(/\s*\[Loopback\]$/, "")])];
-      if (get() && !devices.audio.some((name) => name === get())) options.push([get(), get() + " (сейчас не подключено)"]);
+      if (get() && !devices.audio.includes(get())) options.push([get(), `${get()} ${M.device_missing}`]);
       return el("select", { id, onchange: (e) => set(e.target.value) },
         options.map(([value, label]) => el("option", { value, selected: value === get() }, label)));
     }
@@ -237,11 +381,11 @@ function buildControl(field, id, { get, set }) {
     case "textarea": {
       const area = el("textarea", { id, value: get(), spellcheck: false, oninput: (e) => set(e.target.value) });
       const reset = el("button", { class: "link", onclick: () => { area.value = field.default; set(field.default); } },
-        "Вернуть стандартный текст");
+        M.reset_text);
       return [area, reset];
     }
 
-    case "secret": return buildSecret(field, id, set);
+    case "secret": return buildSecret(id, set);
     case "hotkey": return buildHotkey(id, get, set);
 
     default: {
@@ -254,30 +398,29 @@ function buildControl(field, id, { get, set }) {
   }
 }
 
-function buildSecret(field, id, set) {
-  const placeholder = meta.api_key_set ? "Ключ сохранён — вставьте новый, чтобы заменить"
-    : meta.api_key_env ? "Используется ключ из переменной GEMINI_API_KEY" : "Вставьте ключ AIza…";
+function buildSecret(id, set) {
+  const placeholder = meta.api_key_set ? M.key_saved : meta.api_key_env ? M.key_env : M.key_empty;
   const input = el("input", { type: "password", id, placeholder, autocomplete: "off", spellcheck: false,
     oninput: () => set(input.value.trim() || null) });
   const show = el("button", { type: "button", onclick: () => {
     input.type = input.type === "password" ? "text" : "password";
-    show.textContent = input.type === "password" ? "Показать" : "Скрыть";
-  } }, "Показать");
+    show.textContent = input.type === "password" ? M.show : M.hide;
+  } }, M.show);
   const result = el("div", { class: "result" });
   const test = el("button", { type: "button", onclick: async () => {
     test.disabled = true;
     result.className = "result";
-    result.textContent = "Проверяю…";
+    result.textContent = M.testing;
     const reply = await api("/api/test-gemini", { api_key: input.value.trim() || null, model: values.gemini.answer_model });
     result.className = "result " + (reply.ok ? "ok" : "fail");
     result.textContent = reply.message;
     test.disabled = false;
-  } }, "Проверить");
+  } }, M.test);
   return [input, show, test, result];
 }
 
 function buildHotkey(id, get, set) {
-  const input = el("input", { type: "text", id, class: "hotkey", value: get(), placeholder: "отключено", readOnly: true });
+  const input = el("input", { type: "text", id, class: "hotkey", value: get(), placeholder: M.hotkey_off, readOnly: true });
   input.addEventListener("focus", () => { input.classList.add("recording"); api("/api/hotkeys", { enabled: false }); });
   input.addEventListener("blur", () => { input.classList.remove("recording"); api("/api/hotkeys", { enabled: true }); });
   input.addEventListener("keydown", (e) => {
@@ -293,30 +436,62 @@ function buildHotkey(id, get, set) {
     if (!key && /^F\d{1,2}$/.test(e.code)) key = e.code.toLowerCase();
     if (!key) return;  // пока нажаты только модификаторы
     const mods = [e.ctrlKey && "ctrl", e.altKey && "alt", e.shiftKey && "shift", e.metaKey && "win"].filter(Boolean);
-    if (!mods.length && !/^f\d+$/.test(key)) { toast("Нужен Ctrl, Alt, Shift или Win — иначе клавиша перестанет работать в других программах"); return; }
+    if (!mods.length && !/^f\d+$/.test(key)) { toast(M.hotkey_need_mod); return; }
     input.value = [...mods, key].join("+");
     set(input.value);
   });
   return input;
 }
 
+// ---------- сохранение и синхронизация ----------
+
 async function save() {
   document.querySelectorAll(".error").forEach((node) => (node.textContent = ""));
-  const reply = await api("/api/settings", { values });
+  const changes = diff();
+  const reply = await api("/api/settings", { values: changes });
   if (!reply.ok) {
     const entries = Object.entries(reply.errors || {});
-    for (const [id, message] of entries) document.getElementById("error-" + id).textContent = message;
-    if (entries.length) document.getElementById(entries[0][0]).scrollIntoView({ behavior: "smooth", block: "center" });
-    toast("Не сохранено — исправьте отмеченные поля");
+    for (const [id, message] of entries) {
+      const node = document.getElementById("error-" + id);
+      if (node) node.textContent = message;
+    }
+    document.getElementById(entries[0]?.[0])?.scrollIntoView({ behavior: "smooth", block: "center" });
+    toast(M.save_failed);
     return;
   }
-  if (values.gemini.api_key) meta.api_key_set = true;
-  values.gemini.api_key = null;
-  saved = clone(values);
-  const scroll = window.scrollY;
+  if (changes.language?.interface) { location.reload(); return; }
+  accept(await api("/api/settings"));
   render();
-  window.scrollTo(0, scroll);
-  toast(reply.restart ? "Сохранено. Распознавание перезапускается…" : "Сохранено и применено");
+  toast(reply.restart ? M.saved_restart : M.saved);
+}
+
+// Настройки поменялись снаружи (трей, мышь, другое окно настроек)
+async function refresh() {
+  const settings = await api("/api/settings");
+  if (settings.language !== meta.language) {
+    if (!isDirty()) location.reload();
+    return;
+  }
+  const edited = diff();
+  const focused = document.activeElement && document.activeElement !== document.body;
+  if (focused) {
+    // Пользователь что-то вводит — не перерисовываем форму, обновляем только базу сравнения и «Управление»
+    for (const section of schema) {
+      for (const field of section.fields) {
+        const fresh = settings.values[section.key][field.key];
+        const touched = section.key in edited && field.key in edited[section.key];
+        if (!touched && field.type !== "preset_list") values[section.key][field.key] = clone(fresh);
+        saved[section.key][field.key] = fresh;
+      }
+    }
+    version = settings.version;
+    document.getElementById("control").replaceWith(renderControls());
+    updateDirty();
+    return;
+  }
+  accept(settings);
+  for (const [section, fields] of Object.entries(edited)) Object.assign(values[section], fields);
+  render();
 }
 
 function observeSections() {
@@ -339,9 +514,15 @@ async function pollStatus() {
     const status = await api("/api/status");
     dot.style.background = STATUS_COLORS[status.kind] || STATUS_COLORS.idle;
     text.textContent = status.text;
+    runtime = status.runtime;
+    for (const key of Object.keys(RUNTIME_TEXT)) {
+      const input = document.getElementById(`control-runtime-${key}`);
+      if (input) input.checked = Boolean(runtime[key]);
+    }
+    if (schema.length && status.version !== version) await refresh();
   } catch {
     dot.style.background = STATUS_COLORS.error;
-    text.textContent = "Программа не запущена — изменения не сохранятся";
+    text.textContent = M.not_running || "…";
   }
 }
 
@@ -353,10 +534,8 @@ document.addEventListener("keydown", (e) => {
 window.addEventListener("beforeunload", (e) => { if (isDirty()) e.preventDefault(); });
 
 load().catch(() => {
-  document.getElementById("main").replaceChildren(el("div", { class: "loading" },
-    "Не удалось загрузить настройки. Откройте окно заново через значок Smart Overlay в трее."));
+  document.getElementById("main").replaceChildren(el("div", { class: "loading" }, M.load_failed || "Error"));
 });
-pollStatus();
 setInterval(pollStatus, 1500);
 </script>
 </body>

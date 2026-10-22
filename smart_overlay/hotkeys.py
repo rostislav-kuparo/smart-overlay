@@ -6,6 +6,8 @@ import threading
 from collections.abc import Callable
 from ctypes import wintypes
 
+from .i18n import msg
+
 log = logging.getLogger(__name__)
 
 user32 = ctypes.windll.user32
@@ -27,13 +29,18 @@ def parse_hotkey(combo: str) -> tuple[int, int]:
     modifiers = 0
     for mod in mods:
         if mod not in MODIFIERS:
-            raise ValueError(f"неизвестный модификатор «{mod}» в «{combo}»")
+            raise ValueError(msg("error.hotkey_modifier", mod=mod))
         modifiers |= MODIFIERS[mod]
     if key in KEYS:
         return modifiers, KEYS[key]
     if len(key) == 1 and key.isascii() and key.isalnum():
         return modifiers, ord(key.upper())
-    raise ValueError(f"неизвестная клавиша «{key}» в «{combo}»")
+    raise ValueError(msg("error.hotkey_key", key=key))
+
+
+def pretty_hotkey(combo: str) -> str:
+    """ctrl+alt+m → Ctrl+Alt+M"""
+    return "+".join(part.upper() if len(part) == 1 else part.capitalize() for part in combo.split("+") if part)
 
 
 class HotkeyListener(threading.Thread):
