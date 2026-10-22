@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "smart-overlay"
+version = "0.2.0"
+description = "Слушает звук ПК, распознаёт вопросы на GPU и показывает ответы Gemini поверх экрана"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "faster-whisper>=1.2",
+    "nvidia-cublas-cu12",
+    "PyAudioWPatch",
+    "soxr",
+    "mss",
+    "Pillow",
+    "google-genai",
+    "PySide6-Essentials",
+    "numpy",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.gui-scripts]
+smart-overlay = "smart_overlay.__main__:main"
+
+[project.scripts]
+smart-overlay-console = "smart_overlay.__main__:main"
+
+[tool.setuptools]
+packages = ["smart_overlay"]
+
+[tool.setuptools.package-data]
+smart_overlay = ["web/*.html", "assets/*"]

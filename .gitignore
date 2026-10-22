@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+# личные настройки (могут содержать ключ API) хранятся в %APPDATA%\SmartOverlay, но на всякий случай:
+config.toml
+*.log
