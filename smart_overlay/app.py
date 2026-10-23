@@ -125,7 +125,8 @@ class Controller(QObject):
         if old["language"]["interface"] != new["language"]["interface"]:
             self._update_move_hint()
             self.pipeline.refresh_status()
-        elif old["detector"]["auto_answer"] != new["detector"]["auto_answer"]:
+        elif old["detector"]["auto_answer"] != new["detector"]["auto_answer"] or old["gemini"] != new["gemini"]:
+            # Например, сохранили ключ — надпись «нет ключа API» больше не актуальна
             self.pipeline.refresh_status()
         self._tray_rebuild.start()
 

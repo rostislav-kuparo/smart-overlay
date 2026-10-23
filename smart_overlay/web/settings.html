@@ -82,6 +82,7 @@
   .switch input:checked + span { background: var(--accent); }
   .switch input:checked + span::before { transform: translateX(18px); }
   .switch input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+  input.masked { -webkit-text-security: disc; font-family: Consolas, monospace; letter-spacing: 1px; }
   .hotkey { cursor: pointer; caret-color: transparent; font-family: "Cascadia Mono", Consolas, monospace; }
   .hotkey.recording { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--input)); }
   .result { width: 100%; font-size: 12.5px; }
@@ -407,20 +408,39 @@ function buildControl(field, id, { get, set }) {
 
 function buildSecret(id, set) {
   const placeholder = meta.api_key_set ? M.key_saved : meta.api_key_env ? M.key_env : M.key_empty;
-  const input = el("input", { type: "password", id, placeholder, autocomplete: "off", spellcheck: false,
+  // Обычное текстовое поле, скрытое стилем, а не type="password": иначе Edge принимает его за форму входа
+  // и предлагает «сохранить пароль». Значение берём из values — при перерисовке страницы
+  // вставленный, но ещё не сохранённый ключ не пропадает.
+  const input = el("input", { type: "text", id, class: "masked", placeholder, value: values.gemini.api_key || "",
+    autocomplete: "off", spellcheck: false, "data-lpignore": "true", "data-1p-ignore": "true",
     oninput: () => set(input.value.trim() || null) });
   const show = el("button", { type: "button", onclick: () => {
-    input.type = input.type === "password" ? "text" : "password";
-    show.textContent = input.type === "password" ? M.show : M.hide;
+    input.classList.toggle("masked");
+    show.textContent = input.classList.contains("masked") ? M.show : M.hide;
   } }, M.show);
   const result = el("div", { class: "result" });
   const test = el("button", { type: "button", onclick: async () => {
     test.disabled = true;
     result.className = "result";
     result.textContent = M.testing;
-    const reply = await api("/api/test-gemini", { api_key: input.value.trim() || null, model: values.gemini.answer_model });
+    const key = input.value.trim() || null;
+    const reply = await api("/api/test-gemini", { api_key: key, model: values.gemini.answer_model });
+    let message = reply.message;
+    if (reply.ok && key) {
+      // Рабочий ключ сразу сохраняем — так он не потеряется, даже если забыть нажать «Сохранить»
+      const stored = await api("/api/settings", { values: { gemini: { api_key: key } } }).catch(() => ({ ok: false }));
+      if (stored.ok) {
+        version = stored.version;
+        meta.api_key_set = true;
+        values.gemini.api_key = null;
+        input.value = "";
+        input.placeholder = M.key_saved;
+        message += ". " + M.key_stored;
+        updateDirty();
+      }
+    }
     result.className = "result " + (reply.ok ? "ok" : "fail");
-    result.textContent = reply.message;
+    result.textContent = message;
     test.disabled = false;
   } }, M.test);
   return [input, show, test, result];

@@ -190,6 +190,7 @@ MESSAGES: dict[str, T] = {
     "web.key_env": T("Используется ключ из переменной GEMINI_API_KEY", "Використовується ключ зі змінної GEMINI_API_KEY",
                      "Using the key from GEMINI_API_KEY"),
     "web.key_empty": T("Вставьте ключ AIza…", "Вставте ключ AIza…", "Paste your AIza… key"),
+    "web.key_stored": T("Ключ сохранён", "Ключ збережено", "Key saved"),
     "web.show": T("Показать", "Показати", "Show"),
     "web.hide": T("Скрыть", "Сховати", "Hide"),
     "web.test": T("Проверить", "Перевірити", "Test"),
