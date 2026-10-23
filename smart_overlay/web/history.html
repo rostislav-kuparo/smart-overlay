@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smart Overlay</title>
+<link rel="icon" href="/icon.png">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f4f4f7; --panel: #ffffff; --text: #1c1c21; --muted: #6b6b76; --border: #e2e2e8;
+    --input: #ffffff; --hover: #efeff4; --accent: #6750f0; --accent-text: #ffffff; --code: #f0eff6;
+    --ok: #208a57; --warn: #b26b00; --danger: #d93a3f; --info: #2f6fd6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141417; --panel: #1d1d22; --text: #ececf1; --muted: #9a9aa6; --border: #2d2d35;
+      --input: #25252c; --hover: #2a2a32; --accent: #8b7bff; --accent-text: #120e2b; --code: #26252f;
+      --ok: #4cc38a; --warn: #f5b13d; --danger: #ff6b6f; --info: #6ea8ff;
+    }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.5 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; }
+  header { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 12px; padding: 12px 20px;
+           background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(12px);
+           border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  header img { width: 28px; height: 28px; }
+  header h1 { margin: 0; font-size: 16px; font-weight: 600; white-space: nowrap; }
+  .status { display: inline-flex; align-items: center; gap: 7px; min-width: 0; max-width: 380px; padding: 3px 11px;
+            border: 1px solid var(--border); border-radius: 999px; background: var(--panel); color: var(--muted); font-size: 12.5px; }
+  .status span:last-child { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .spacer { flex: 1; }
+  button, a.button { font: inherit; padding: 6px 12px; border: 1px solid var(--border); border-radius: 8px;
+           background: var(--panel); color: var(--text); cursor: pointer; white-space: nowrap; text-decoration: none; }
+  button:hover, a.button:hover { background: var(--hover); }
+  button.danger { color: var(--danger); }
+  button.small, a.small { padding: 3px 10px; font-size: 12.5px; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 16px 20px 40px; }
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 14px; }
+  .tabs button { border: none; border-bottom: 2px solid transparent; border-radius: 0; background: none;
+                 padding: 8px 14px; color: var(--muted); }
+  .tabs button.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 14px; }
+  .toolbar input[type=search] { flex: 1 1 240px; }
+  input[type=search], select { min-width: 0; padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px;
+           background: var(--input); color: var(--text); font: inherit; }
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; }
+  .chips button { border-radius: 999px; padding: 4px 12px; font-size: 12.5px; }
+  .chips button.active { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+  .notice { margin-bottom: 14px; padding: 10px 14px; border: 1px solid var(--warn); border-radius: 10px; color: var(--warn); }
+  .day { margin: 18px 0 8px; color: var(--muted); font-size: 12.5px; font-weight: 600; }
+  .day::first-letter { text-transform: uppercase; }
+  .event { margin-bottom: 10px; padding: 12px 16px; border: 1px solid var(--border); border-left: 3px solid var(--muted);
+           border-radius: 10px; background: var(--panel); scroll-margin-top: 90px; }
+  .event.flash { outline: 2px solid var(--accent); }
+  .event.s-answered { border-left-color: var(--ok); }
+  .event.s-answering { border-left-color: var(--info); }
+  .event.s-interrupted { border-left-color: var(--warn); }
+  .event.s-error { border-left-color: var(--danger); }
+  .event-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-bottom: 6px; font-size: 12.5px; }
+  .badge { padding: 1px 9px; border-radius: 999px; border: 1px solid currentColor; font-size: 11.5px; font-weight: 600; white-space: nowrap; }
+  .b-answered { color: var(--ok); } .b-answering { color: var(--info); } .b-interrupted { color: var(--warn); }
+  .b-not_question, .b-repeat { color: var(--muted); } .b-error { color: var(--danger); }
+  .meta, .timings { color: var(--muted); }
+  .line { margin: 2px 0; }
+  .label { color: var(--muted); }
+  .question { font-weight: 600; }
+  .answer { margin-top: 8px; }
+  .answer p { margin: 4px 0; }
+  .answer ul, .answer ol { margin: 4px 0; padding-left: 22px; }
+  .answer code { padding: 1px 4px; border-radius: 4px; background: var(--code); font: 12.5px "Cascadia Mono", Consolas, monospace; }
+  .answer pre { margin: 6px 0; padding: 8px 10px; border-radius: 8px; background: var(--code); overflow-x: auto; }
+  .answer pre code { padding: 0; background: none; }
+  .error-text { margin-top: 6px; color: var(--danger); overflow-wrap: anywhere; }
+  details { margin-top: 8px; font-size: 12.5px; }
+  summary { cursor: pointer; color: var(--muted); }
+  .context { margin: 6px 0; padding: 6px 10px; border-left: 2px solid var(--border); color: var(--muted); }
+  .context div:last-child { color: var(--text); }
+  .shot { display: block; max-width: 100%; max-height: 360px; margin-top: 8px; border: 1px solid var(--border); border-radius: 8px; }
+  .actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .phrase { display: grid; grid-template-columns: 76px minmax(0, 1fr) auto; gap: 10px; align-items: start;
+            padding: 7px 10px; border-radius: 8px; }
+  .phrase:hover { background: var(--panel); }
+  .phrase time { color: var(--muted); font-size: 12.5px; padding-top: 1px; }
+  .phrase .side { display: flex; gap: 6px; align-items: center; }
+  .phrase .answer-this { visibility: hidden; }
+  .phrase:hover .answer-this, .phrase .answer-this:focus { visibility: visible; }
+  .phrase .badge { cursor: pointer; }
+  .hint, .empty { color: var(--muted); }
+  .empty { padding: 40px 0; text-align: center; }
+  .more { display: block; margin: 14px auto; }
+  .toast { position: fixed; left: 50%; bottom: 22px; padding: 10px 16px; border-radius: 10px; background: var(--text);
+           color: var(--bg); font-weight: 500; opacity: 0; pointer-events: none; transform: translate(-50%, 16px); transition: .2s; }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+  @media (max-width: 640px) {
+    header { padding: 10px 16px; }
+    .wrap { padding: 12px 16px 32px; }
+    .phrase { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+    .phrase .answer-this { visibility: visible; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <img src="/icon.png" alt="">
+  <h1 id="title">Smart Overlay</h1>
+  <span class="status"><span class="dot" id="status-dot"></span><span id="status-text">…</span></span>
+  <span class="spacer"></span>
+  <a class="button small" id="export-md" download></a>
+  <a class="button small" id="export-json" download>JSON</a>
+  <button class="small danger" id="clear"></button>
+  <a class="button small" id="settings-link"></a>
+</header>
+<div class="wrap">
+  <div class="tabs">
+    <button id="tab-events" class="active"></button>
+    <button id="tab-transcript"></button>
+  </div>
+  <div id="notice"></div>
+  <div id="view-events">
+    <div class="toolbar">
+      <input type="search" id="search">
+      <div class="chips" id="filters"></div>
+      <select id="events-day"></select>
+    </div>
+    <div id="events"></div>
+    <button class="more" id="more" hidden></button>
+  </div>
+  <div id="view-transcript" hidden>
+    <div class="toolbar">
+      <select id="transcript-day"></select>
+      <span class="hint" id="transcript-hint"></span>
+    </div>
+    <div id="phrases"></div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const token = new URLSearchParams(location.search).get("t") || "";
+const STATUS_COLORS = { ok: "var(--ok)", busy: "var(--warn)", idle: "var(--muted)", error: "var(--danger)" };
+const FILTERS = ["", "answered", "rejected", "errors", "manual"];
+const FILTER_TEXT = { "": "filter_all", answered: "filter_answered", rejected: "filter_rejected", errors: "filter_errors", manual: "filter_manual" };
+
+let M = {}, lang = "ru", days = [], events = [], more = false, historyVersion = -1;
+const state = { tab: "events", filter: "", q: "", day: "", transcriptDay: "" };
+const openDetails = new Set();
+
+async function api(path, body) {
+  const response = await fetch(path, {
+    method: body === undefined ? "GET" : "POST",
+    headers: { "X-Token": token, "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  return response.json();
+}
+
+function el(tag, attrs = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(attrs)) {
+    if (value === undefined || value === null || value === false) continue;
+    if (key === "class") node.className = value;
+    else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+    else if (key in node) node[key] = value;
+    else node.setAttribute(key, value);
+  }
+  for (const child of children.flat()) if (child !== null && child !== undefined && child !== false) node.append(child);
+  return node;
+}
+
+function toast(text) {
+  const node = document.getElementById("toast");
+  node.textContent = text;
+  node.classList.add("show");
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => node.classList.remove("show"), 2800);
+}
+
+const withToken = (path) => `${path}${path.includes("?") ? "&" : "?"}t=${encodeURIComponent(token)}`;
+const dayOf = (ts) => { const d = new Date(ts * 1000); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+const timeOf = (ts) => new Date(ts * 1000).toLocaleTimeString(lang, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+const dayTitle = (day) => new Date(day + "T12:00:00").toLocaleDateString(lang, { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+const seconds = (ms) => M.seconds.replace("{n}", (ms / 1000).toLocaleString(lang, { maximumFractionDigits: 1 }));
+
+// Небольшой и безопасный разбор Markdown: сначала экранируем всё, потом добавляем только свои теги
+function markdown(text) {
+  const escape = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const inline = (s) => escape(s)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*\s][^*]*)\*/g, "$1<em>$2</em>");
+  const out = [];
+  let list = null, code = null;
+  const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
+  for (const line of text.split("\n")) {
+    if (line.trim().startsWith("```")) {
+      if (code === null) { closeList(); code = []; } else { out.push(`<pre><code>${escape(code.join("\n"))}</code></pre>`); code = null; }
+      continue;
+    }
+    if (code !== null) { code.push(line); continue; }
+    const bullet = line.match(/^\s*[-*•]\s+(.*)$/);
+    const numbered = line.match(/^\s*\d+[.)]\s+(.*)$/);
+    if (bullet || numbered) {
+      const tag = bullet ? "ul" : "ol";
+      if (list !== tag) { closeList(); out.push(`<${tag}>`); list = tag; }
+      out.push(`<li>${inline((bullet || numbered)[1])}</li>`);
+      continue;
+    }
+    closeList();
+    const heading = line.match(/^#{1,6}\s+(.*)$/);
+    if (heading) out.push(`<p><strong>${inline(heading[1])}</strong></p>`);
+    else if (line.trim()) out.push(`<p>${inline(line)}</p>`);
+  }
+  closeList();
+  if (code !== null) out.push(`<pre><code>${escape(code.join("\n"))}</code></pre>`);
+  return out.join("");
+}
+
+// ---------- загрузка ----------
+
+async function loadEvents(append = false) {
+  const params = new URLSearchParams({ filter: state.filter, q: state.q, day: state.day, offset: append ? events.length : 0 });
+  const reply = await api("/api/history?" + params);
+  if (!append) applyMeta(reply);
+  events = append ? events.concat(reply.events) : reply.events;
+  more = reply.more;
+  days = reply.days;
+  historyVersion = reply.version;
+  document.getElementById("notice").replaceChildren(reply.enabled ? "" : el("div", { class: "notice" }, M.history_off));
+  renderDays();
+  renderEvents();
+}
+
+function applyMeta(reply) {
+  if (lang === reply.language && M.history) return;
+  M = reply.messages;
+  lang = reply.language;
+  document.documentElement.lang = lang;
+  document.title = M.history_title;
+  document.getElementById("title").textContent = M.history;
+  document.getElementById("tab-events").textContent = M.tab_events;
+  document.getElementById("tab-transcript").textContent = M.tab_transcript;
+  document.getElementById("search").placeholder = M.search_ph;
+  document.getElementById("more").textContent = M.load_more;
+  document.getElementById("clear").textContent = M.clear;
+  document.getElementById("transcript-hint").textContent = M.transcript_hint;
+  const settings = document.getElementById("settings-link");
+  settings.textContent = M.settings;
+  settings.href = withToken("/");
+  const md = document.getElementById("export-md");
+  md.textContent = `${M.export} · Markdown`;
+  md.href = withToken("/api/history/export?format=md");
+  document.getElementById("export-json").href = withToken("/api/history/export?format=json");
+  document.getElementById("filters").replaceChildren(...FILTERS.map((name) => el("button", {
+    class: name === state.filter ? "active" : "", onclick: () => { state.filter = name; renderFilters(); loadEvents(); },
+  }, M[FILTER_TEXT[name]])));
+}
+
+function renderFilters() {
+  [...document.getElementById("filters").children].forEach((button, i) => button.classList.toggle("active", FILTERS[i] === state.filter));
+}
+
+function renderDays() {
+  const eventsDay = document.getElementById("events-day");
+  eventsDay.replaceChildren(el("option", { value: "" }, M.all_days),
+    ...days.filter((d) => d.events).map((d) => el("option", { value: d.day, selected: d.day === state.day }, `${dayTitle(d.day)} · ${d.events}`)));
+  const phraseDays = days.filter((d) => d.phrases);
+  if (!state.transcriptDay && phraseDays.length) state.transcriptDay = phraseDays[0].day;
+  document.getElementById("transcript-day").replaceChildren(
+    ...phraseDays.map((d) => el("option", { value: d.day, selected: d.day === state.transcriptDay }, `${dayTitle(d.day)} · ${d.phrases}`)));
+}
+
+// ---------- вопросы и ответы ----------
+
+function renderEvents() {
+  const list = document.getElementById("events");
+  if (!events.length) {
+    list.replaceChildren(el("div", { class: "empty" }, M.empty_events));
+  } else {
+    const nodes = [];
+    let lastDay = "";
+    for (const event of events) {
+      const day = dayOf(event.ts);
+      if (day !== lastDay && !state.day) nodes.push(el("div", { class: "day" }, dayTitle(day)));
+      lastDay = day;
+      nodes.push(eventCard(event));
+    }
+    list.replaceChildren(...nodes);
+  }
+  const moreButton = document.getElementById("more");
+  moreButton.hidden = !more;
+}
+
+function eventCard(event) {
+  const timings = [
+    event.check_ms != null && `${M.timing_check} ${seconds(event.check_ms)}`,
+    event.wait_ms != null && `${M.timing_wait} ${seconds(event.wait_ms)}`,
+    event.answer_ms != null && `${M.timing_answer} ${seconds(event.answer_ms)}`,
+  ].filter(Boolean).join(" · ");
+  const meta = [timeOf(event.ts), M["kind_" + event.kind], event.preset && `${M.preset}: ${event.preset}`].filter(Boolean).join(" · ");
+  const question = event.question && event.question !== event.heard ? event.question : "";
+  const answer = el("div", { class: "answer" });
+  if (event.answer) answer.innerHTML = markdown(event.answer);
+
+  const details = el("details", { open: openDetails.has(event.id),
+    ontoggle: (e) => (e.target.open ? openDetails.add(event.id) : openDetails.delete(event.id)) },
+    el("summary", {}, [M.context, event.screenshot ? M.screenshot : "", event.model].filter(Boolean).join(" · ")),
+    event.context.length ? el("div", { class: "context" }, event.context.map((line) => el("div", {}, line))) : null,
+    event.model ? el("div", { class: "meta" }, `${M.model}: ${event.model}`) : null,
+    event.screenshot ? el("a", { href: withToken(`/api/history/shot?id=${event.id}`), target: "_blank" },
+      el("img", { class: "shot", loading: "lazy", alt: M.screenshot, src: withToken(`/api/history/shot?id=${event.id}`) })) : null);
+
+  const card = el("article", { class: `event s-${event.status}`, id: `event-${event.id}` },
+    el("div", { class: "event-head" },
+      el("span", { class: `badge b-${event.status}` }, M["status_" + event.status]),
+      el("span", { class: "meta" }, meta),
+      el("span", { class: "spacer" }),
+      timings ? el("span", { class: "timings" }, timings) : null),
+    event.heard ? el("div", { class: "line" }, el("span", { class: "label" }, M.heard + ": "), event.heard) : null,
+    question ? el("div", { class: "line question" }, el("span", { class: "label" }, M.question + ": "), question) : null,
+    event.answer ? answer : null,
+    event.error ? el("div", { class: "error-text" }, event.error) : null,
+    details,
+    el("div", { class: "actions" },
+      event.status !== "answering" ? el("button", { class: "small", onclick: () => askAgain(event) }, M.ask_again) : null,
+      event.answer ? el("button", { class: "small", onclick: () => copy(event.answer) }, M.copy) : null,
+      el("button", { class: "small danger", onclick: () => remove(event) }, M.delete)));
+  return card;
+}
+
+async function askAgain(event) {
+  const reply = await api("/api/history/ask", { event_id: event.id }).catch(() => ({ ok: false }));
+  toast(reply.ok ? M.asked : "Error");
+}
+
+async function copy(text) {
+  await navigator.clipboard.writeText(text);
+  toast(M.copied);
+}
+
+async function remove(event) {
+  if (!confirm(M.delete_confirm)) return;
+  await api("/api/history/delete", { id: event.id });
+  events = events.filter((e) => e.id !== event.id);
+  renderEvents();
+}
+
+// ---------- расшифровка ----------
+
+async function loadTranscript() {
+  const container = document.getElementById("phrases");
+  if (!state.transcriptDay) { container.replaceChildren(el("div", { class: "empty" }, M.empty_transcript)); return; }
+  const scroll = window.scrollY;
+  const reply = await api("/api/history/phrases?" + new URLSearchParams({ day: state.transcriptDay }));
+  if (!reply.phrases.length) { container.replaceChildren(el("div", { class: "empty" }, M.empty_transcript)); return; }
+  container.replaceChildren(...reply.phrases.map((phrase) => el("div", { class: "phrase" },
+    el("time", {}, timeOf(phrase.ts)),
+    el("div", {}, phrase.text),
+    el("div", { class: "side" },
+      phrase.event_id ? el("span", { class: `badge b-${phrase.event_status}`, title: M.tab_events,
+        onclick: () => showEvent(phrase.event_id, dayOf(phrase.ts)) }, M["status_" + phrase.event_status]) : null,
+      el("button", { class: "small answer-this", onclick: () => answerPhrase(phrase) }, M.answer_this)))));
+  window.scrollTo(0, scroll);
+}
+
+async function answerPhrase(phrase) {
+  const reply = await api("/api/history/ask", { phrase_id: phrase.id }).catch(() => ({ ok: false }));
+  toast(reply.ok ? M.asked : "Error");
+}
+
+async function showEvent(id, day) {
+  Object.assign(state, { filter: "", q: "", day });
+  document.getElementById("search").value = "";
+  renderFilters();
+  await switchTab("events");
+  const card = document.getElementById(`event-${id}`);
+  if (card) {
+    card.scrollIntoView({ behavior: "smooth", block: "center" });
+    card.classList.add("flash");
+    setTimeout(() => card.classList.remove("flash"), 1600);
+  }
+}
+
+// ---------- вкладки, фильтры, обновление ----------
+
+function switchTab(tab) {
+  state.tab = tab;
+  document.getElementById("tab-events").classList.toggle("active", tab === "events");
+  document.getElementById("tab-transcript").classList.toggle("active", tab === "transcript");
+  document.getElementById("view-events").hidden = tab !== "events";
+  document.getElementById("view-transcript").hidden = tab !== "transcript";
+  // Каждая вкладка при открытии перечитывается: пока смотрели другую, могли появиться новые записи
+  return tab === "transcript" ? loadTranscript() : loadEvents();
+}
+
+document.getElementById("tab-events").addEventListener("click", () => switchTab("events"));
+document.getElementById("tab-transcript").addEventListener("click", () => switchTab("transcript"));
+document.getElementById("events-day").addEventListener("change", (e) => { state.day = e.target.value; loadEvents(); });
+document.getElementById("transcript-day").addEventListener("change", (e) => { state.transcriptDay = e.target.value; loadTranscript(); });
+document.getElementById("more").addEventListener("click", () => loadEvents(true));
+let searchTimer;
+document.getElementById("search").addEventListener("input", (e) => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => { state.q = e.target.value; loadEvents(); }, 300);
+});
+document.getElementById("clear").addEventListener("click", async () => {
+  if (!confirm(M.clear_confirm)) return;
+  await api("/api/history/clear", {});
+  state.transcriptDay = "";
+  await loadEvents();
+  if (state.tab === "transcript") loadTranscript();
+});
+
+async function poll() {
+  const dot = document.getElementById("status-dot");
+  const text = document.getElementById("status-text");
+  try {
+    const status = await api("/api/status");
+    dot.style.background = STATUS_COLORS[status.kind] || STATUS_COLORS.idle;
+    text.textContent = status.text;
+    if (status.history_version !== historyVersion) {
+      historyVersion = status.history_version;
+      // Новые записи подтягиваем, только если пользователь не листает дальше первой страницы
+      if (state.tab === "events" && events.length <= 50) await loadEvents();
+      if (state.tab === "transcript" && state.transcriptDay === dayOf(Date.now() / 1000)) await loadTranscript();
+    }
+  } catch {
+    dot.style.background = STATUS_COLORS.error;
+    text.textContent = "…";
+  }
+}
+
+loadEvents().catch(() => { document.getElementById("events").replaceChildren(el("div", { class: "empty" }, "Error")); });
+setInterval(poll, 2000);
+</script>
+</body>
+</html>

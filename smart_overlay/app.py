@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from .config import INSTANCE_PATH, ConfigStore, restart_needed
 from .gemini_client import resolve_api_key
+from .history import HistoryStore
 from .hotkeys import HotkeyListener, pretty_hotkey
 from .i18n import msg
 from .overlay import Overlay
@@ -20,6 +21,7 @@ log = logging.getLogger(__name__)
 
 ICON_PATH = PACKAGE_DIR / "assets" / "icon.png"
 HOTKEYS_RESUME_MS = 20_000  # если окно настроек закрыли во время записи сочетания
+HISTORY_PRUNE_MS = 3_600_000  # раз в час удаляем записи старше срока хранения
 
 
 class Controller(QObject):
@@ -50,12 +52,20 @@ class Controller(QObject):
         self.control_requested.connect(self._on_control)
         self.hotkeys_enabled.connect(self._set_hotkeys_enabled)
 
-        self.pipeline = Pipeline(cfg, self.events)
+        self.history = HistoryStore()
+        self._prune_history()
+        self._history_prune = QTimer(self, interval=HISTORY_PRUNE_MS)
+        self._history_prune.timeout.connect(self._prune_history)
+        self._history_prune.start()
+
+        self.pipeline = Pipeline(cfg, self.events, self.history)
         self.server = SettingsServer(
             store=self.store,
+            history=self.history,
             on_changed=self.settings_changed.emit,
             get_status=self._status_snapshot,
             on_control=self.control_requested.emit,
+            on_history_ask=self._on_history_ask,
             set_hotkeys_enabled=self.hotkeys_enabled.emit,
         )
         self.server.start()
@@ -100,7 +110,7 @@ class Controller(QObject):
         if restart_needed(old, new):
             log.info("Перезапуск распознавания с новыми настройками")
             self.pipeline.stop()
-            self.pipeline = Pipeline(new, self.events)
+            self.pipeline = Pipeline(new, self.events, self.history)
             self.pipeline.start()
             self.runtime["listening"] = True
         else:
@@ -132,6 +142,19 @@ class Controller(QObject):
             cfg["overlay"].update(position="custom", x=x, y=y, width=width, height=height)
 
         self._apply(*self.store.update(place))
+
+    def _on_history_ask(self, request: dict) -> None:
+        """Повторный вопрос из окна истории. Вызывается из потока веб-сервера: конвейер сам уходит в свои потоки."""
+        if "event_id" in request:
+            self.pipeline.ask_again(request["event_id"])
+        else:
+            self.pipeline.answer_phrase(request["phrase_id"])
+
+    def _prune_history(self) -> None:
+        try:
+            self.history.prune(self.store.get()["history"]["keep_days"])
+        except Exception:
+            log.exception("Не удалось удалить старые записи истории")
 
     def _next_preset(self) -> None:
         cfg = self.store.get()["presets"]
@@ -179,7 +202,9 @@ class Controller(QObject):
         """Меню собирается заново при каждом изменении — так галочки и язык всегда актуальны."""
         cfg = self.store.get()
         menu = QMenu()
-        menu.addAction(msg("tray.settings"), self.server.open_window)
+        # Через lambda: иначе Qt передаст в open_window флаг checked вместо адреса страницы
+        menu.addAction(msg("tray.settings"), lambda: self.server.open_window())
+        menu.addAction(msg("tray.history"), lambda: self.server.open_window("/history"))
         menu.addSeparator()
         self._add_check(menu, "tray.listen", self.runtime["listening"], self.set_listening)
         self._add_check(menu, "tray.auto_answer", cfg["detector"]["auto_answer"],

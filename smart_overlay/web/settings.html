@@ -40,6 +40,9 @@
   button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
   button.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 88%, var(--text)); }
   button.link { border: none; background: none; padding: 2px 0; color: var(--accent); font-size: 12.5px; }
+  a.button { padding: 7px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel);
+             color: var(--text); text-decoration: none; white-space: nowrap; }
+  a.button:hover { background: var(--hover); }
   .layout { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 24px; max-width: 1000px;
             margin: 0 auto; padding: 20px; }
   nav { position: sticky; top: 76px; align-self: start; display: flex; flex-direction: column; gap: 2px; }
@@ -114,6 +117,7 @@
   <h1>Smart Overlay</h1>
   <span class="status"><span class="dot" id="status-dot"></span><span id="status-text">…</span></span>
   <span class="spacer"></span>
+  <a id="history-link" class="button" href="#"></a>
   <button id="revert" disabled></button>
   <button id="save" class="primary" disabled title="Ctrl+S"></button>
 </header>
@@ -205,6 +209,9 @@ function accept(settings) {
   document.title = M.title;
   document.getElementById("save").textContent = M.save;
   document.getElementById("revert").textContent = M.revert;
+  const historyLink = document.getElementById("history-link");
+  historyLink.textContent = M.history;
+  historyLink.href = "/history?t=" + encodeURIComponent(token);
   document.querySelector(".status").title = M.status_title;
 }
 

@@ -312,6 +312,28 @@ SCHEMA: tuple[Section, ...] = (
                 "The window is left out of screenshots, so Gemini doesn't see its own previous answers. Side effect: "
                 "it is also invisible in screen recordings and screen sharing.")),
     )),
+    Section("history", T("История", "Історія", "History"), (
+        Field("enabled", True, T("Вести историю", "Вести історію", "Keep history"),
+              T("Расшифровка, найденные вопросы и ответы сохраняются только на этом ПК.",
+                "Розшифровка, знайдені питання й відповіді зберігаються лише на цьому ПК.",
+                "The transcript, detected questions and answers are stored on this PC only.")),
+        Field("save_screenshots", True, T("Сохранять скриншоты", "Зберігати скриншоти", "Save screenshots"),
+              T("Скриншот, отправленный вместе с вопросом, — чтобы потом видеть, что было на экране.",
+                "Скриншот, надісланий разом із питанням, — щоб потім бачити, що було на екрані.",
+                "The screenshot sent with a question, so you can later see what was on screen.")),
+        Field("keep_days", 30, T("Хранить, дней", "Зберігати, днів", "Keep for, days"),
+              T("Более старые записи и скриншоты удаляются автоматически.",
+                "Старіші записи та скриншоти видаляються автоматично.",
+                "Older entries and screenshots are deleted automatically."),
+              min=1, max=365, step=1),
+    ), description=T(
+        "Всё, что заметил алгоритм: каждая фраза, каждое срабатывание детектора и его итог — ответ, «не вопрос», "
+        "повтор или ошибка. Открыть — кнопкой «История» вверху или в трее.",
+        "Усе, що помітив алгоритм: кожна фраза, кожне спрацювання детектора та його підсумок — відповідь, "
+        "«не питання», повтор чи помилка. Відкрити — кнопкою «Історія» вгорі або в треї.",
+        "Everything the algorithm noticed: every phrase, every detector trigger and its outcome — answer, "
+        "“not a question”, repeat or error. Open it with the History button at the top or from the tray.",
+    )),
     Section("hotkeys", T("Горячие клавиши", "Гарячі клавіші", "Hotkeys"), (
         _hotkey("toggle", "ctrl+alt+h", T("Показать / скрыть окно", "Показати / сховати вікно", "Show / hide window")),
         _hotkey("ask", "ctrl+alt+a", T("Спросить вручную (скриншот + последние реплики)",
