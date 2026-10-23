@@ -26,7 +26,13 @@ def resolve_api_key(gemini_cfg: dict) -> str:
 
 def ping(api_key: str, model: str) -> str:
     """Короткий запрос для проверки ключа и названия модели из окна настроек."""
-    response = genai.Client(api_key=api_key).models.generate_content(model=model, contents="Ответь одним словом: ок")
+    # Клиент обязательно держим в переменной: временный genai.Client() сборщик мусора закрывает сразу после
+    # обращения к .models, и запрос падает с «Cannot send a request, as the client has been closed».
+    client = genai.Client(api_key=api_key)
+    try:
+        response = client.models.generate_content(model=model, contents="Ответь одним словом: ок")
+    finally:
+        client.close()
     return (response.text or "").strip()
 
 
