@@ -47,8 +47,10 @@ class Events(QObject):
 
     status = Signal(str, str)  # текст, вид: ok | busy | idle | error
     transcript = Signal(str)
-    question = Signal(int, str)  # номер ответа, вопрос
+    question = Signal(int, str)  # номер ответа, вопрос — открывается новое окно ответа
     answer_chunk = Signal(int, str)
+    answer_done = Signal(int)
+    answer_failed = Signal(int, str)  # номер ответа, текст ошибки
     hotkey = Signal(str)
 
 
@@ -63,7 +65,8 @@ class Pipeline:
         self._workers = ThreadPoolExecutor(max_workers=3, thread_name_prefix="ask")
         self._stop = threading.Event()
         self._paused = threading.Event()
-        self._answer_id = 0
+        self._answering = 0  # сколько ответов сейчас пишется (каждый в своём окне)
+        self._answering_lock = threading.Lock()
         self._last_question = ("", 0.0)
         self._gemini: GeminiClient | None = None
         self._gemini_error = ""
@@ -268,7 +271,7 @@ class Pipeline:
         if gemini is None:
             self._log_event(status="error", error=self._gemini_error, **record)
             return
-        answer_id = self._answer_id = next(_answer_ids)
+        answer_id = next(_answer_ids)
 
         shot_cfg = self._cfg["screenshot"]
         if screenshot is None and grab and shot_cfg["enabled"]:
@@ -283,16 +286,17 @@ class Pipeline:
             except Exception:
                 log.exception("Не удалось сохранить скриншот в историю")
 
+        # Каждый ответ пишется в своё окно до конца — новый вопрос старый ответ не прерывает.
         self._events.question.emit(answer_id, question or msg("overlay.manual_question"))
         self._status(msg("status.thinking"), "busy")
+        with self._answering_lock:
+            self._answering += 1
         started = time.monotonic()
         wait_ms = None
         parts: list[str] = []
+        failed = False
         try:
             for chunk in gemini.answer(self._build_request(question, lines), screenshot):
-                if answer_id != self._answer_id:  # пришёл новый вопрос — этот ответ больше не нужен
-                    self._log_update(event_id, status="interrupted", answer="".join(parts), answer_ms=_ms_since(started))
-                    return
                 if wait_ms is None:
                     wait_ms = _ms_since(ended_at if ended_at is not None else started)
                     if ended_at is not None:
@@ -300,12 +304,20 @@ class Pipeline:
                 parts.append(chunk)
                 self._events.answer_chunk.emit(answer_id, chunk)
         except Exception as e:
+            failed = True
             log.exception("Ошибка ответа Gemini")
             self._status(msg("status.gemini_error", error=e), "error")
+            self._events.answer_failed.emit(answer_id, msg("status.gemini_error", error=e))
             self._log_update(event_id, status="error", error=str(e), answer="".join(parts), answer_ms=_ms_since(started))
-            return
-        self._log_update(event_id, status="answered", answer="".join(parts), wait_ms=wait_ms, answer_ms=_ms_since(started))
-        if answer_id == self._answer_id:
+        else:
+            self._events.answer_done.emit(answer_id)
+            self._log_update(event_id, status="answered", answer="".join(parts), wait_ms=wait_ms,
+                             answer_ms=_ms_since(started))
+        finally:
+            with self._answering_lock:
+                self._answering -= 1
+                still_answering = self._answering
+        if not failed and not still_answering:
             self.refresh_status()
 
     def _build_request(self, question: str | None, lines: list[str]) -> str:

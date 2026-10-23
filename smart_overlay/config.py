@@ -255,10 +255,11 @@ SCHEMA: tuple[Section, ...] = (
               min=640, max=3840, step=80),
         Field("jpeg_quality", 80, T("Качество JPEG", "Якість JPEG", "JPEG quality"), min=30, max=95, step=5),
     )),
-    Section("overlay", T("Окно ответа", "Вікно відповіді", "Answer window"), (
-        Field("position", "top-right", T("Положение", "Розташування", "Position"),
-              T("Окно можно просто перетащить мышью — тогда здесь будет «Своё место».",
-                "Вікно можна просто перетягнути мишею — тоді тут буде «Своє місце».",
+    Section("overlay", T("Строка состояния и вид окон", "Рядок стану та вигляд вікон", "Status window and look"), (
+        Field("position", "top-right", T("Положение строки состояния", "Розташування рядка стану",
+                                         "Status window position"),
+              T("Строку можно просто перетащить мышью — тогда здесь будет «Своё место».",
+                "Рядок можна просто перетягнути мишею — тоді тут буде «Своє місце».",
                 "You can simply drag the window with the mouse — this then becomes “Custom”."),
               kind="select", options=(
                   ("top-right", T("Справа сверху", "Праворуч угорі", "Top right")),
@@ -270,47 +271,81 @@ SCHEMA: tuple[Section, ...] = (
               )),
         Field("x", 0, T("X", "X", "X"), kind="hidden"),
         Field("y", 0, T("Y", "Y", "Y"), kind="hidden"),
-        Field("width", 520, T("Ширина, px", "Ширина, px", "Width, px"),
-              T("Удобнее растянуть окно мышью за левый или правый край.",
-                "Зручніше розтягнути вікно мишею за лівий або правий край.",
+        Field("width", 520, T("Ширина строки, px", "Ширина рядка, px", "Width, px"),
+              T("Удобнее растянуть строку мышью за левый или правый край.",
+                "Зручніше розтягнути рядок мишею за лівий або правий край.",
                 "It's easier to stretch the window by its left or right edge."),
               min=280, max=3000, step=10),
-        Field("height", 0, T("Высота, px", "Висота, px", "Height, px"),
-              T("0 — окно подстраивается под ответ. Если растянуть окно мышью за верхний или нижний край, "
-                "высота станет постоянной, а длинный ответ будет прокручиваться.",
-                "0 — вікно підлаштовується під відповідь. Якщо розтягнути вікно мишею за верхній або нижній край, "
-                "висота стане сталою, а довга відповідь прокручуватиметься.",
-                "0 means the window fits the answer. Stretch it by the top or bottom edge to fix the height; "
-                "long answers then scroll."),
+        Field("height", 0, T("Высота строки, px", "Висота рядка, px", "Height, px"),
+              T("0 — по содержимому.", "0 — за вмістом.", "0 means it fits the content."),
               min=0, max=3000, step=10),
-        Field("max_height_ratio", 0.6, T("Максимальная высота, доля экрана", "Максимальна висота, частка екрана",
-                                         "Maximum height, share of the screen"),
-              T("Только когда высота подстраивается под ответ.", "Лише коли висота підлаштовується під відповідь.",
-                "Only when the height fits the answer."),
-              min=0.2, max=0.95, step=0.05),
         Field("margin", 24, T("Отступ от края экрана, px", "Відступ від краю екрана, px", "Margin from the screen edge, px"),
               min=0, max=200, step=4),
-        Field("font_size", 11, T("Размер шрифта, pt", "Розмір шрифту, pt", "Font size, pt"), min=7, max=24, step=1),
-        Field("opacity", 0.94, T("Непрозрачность", "Непрозорість", "Opacity"), min=0.3, max=1.0, step=0.02),
-        Field("click_through", False, T("Пропускать клики сквозь окно", "Пропускати кліки крізь вікно",
-                                        "Click-through window"),
-              T("Выключено — окно можно таскать мышью, растягивать за края, а колёсико прокручивает ответ. "
-                "Включено — мышь проходит сквозь окно; двигать его тогда можно в режиме «Двигать и растягивать».",
-                "Вимкнено — вікно можна перетягувати мишею, розтягувати за краї, а коліщатко прокручує відповідь. "
-                "Увімкнено — миша проходить крізь вікно; рухати його тоді можна в режимі «Рухати й розтягувати».",
-                "Off: drag the window with the mouse, stretch it by its edges, scroll the answer with the wheel. "
-                "On: the mouse passes through; use “Move and resize” mode to reposition it."),
+        Field("font_size", 11, T("Размер шрифта, pt", "Розмір шрифту, pt", "Font size, pt"),
+              T("Для строки состояния и окон ответов.", "Для рядка стану та вікон відповідей.",
+                "For the status window and answer windows."),
+              min=7, max=24, step=1),
+        Field("opacity", 0.94, T("Непрозрачность", "Непрозорість", "Opacity"),
+              T("Для строки состояния и окон ответов.", "Для рядка стану та вікон відповідей.",
+                "For the status window and answer windows."),
+              min=0.3, max=1.0, step=0.02),
+        Field("click_through", False, T("Пропускать клики сквозь строку состояния", "Пропускати кліки крізь рядок стану",
+                                        "Click-through status window"),
+              T("Выключено — строку можно таскать мышью и растягивать за края. Включено — мышь проходит сквозь неё; "
+                "двигать её тогда можно в режиме «Двигать и растягивать». Окна ответов всегда можно двигать и закрыть.",
+                "Вимкнено — рядок можна перетягувати мишею й розтягувати за краї. Увімкнено — миша проходить крізь "
+                "нього; рухати його тоді можна в режимі «Рухати й розтягувати». Вікна відповідей завжди можна рухати "
+                "й закрити.",
+                "Off: drag the status window and stretch it by its edges. On: the mouse passes through it; use "
+                "“Move and resize” mode to reposition it. Answer windows can always be moved and closed."),
               quick=True),
         Field("show_transcript", True, T("Показывать последнюю распознанную фразу", "Показувати останню розпізнану фразу",
                                          "Show the last transcribed phrase"), quick=True),
-        Field("exclude_from_capture", True, T("Скрывать окно от захвата экрана", "Приховувати вікно від захоплення екрана",
-                                              "Hide from screen capture"),
-              T("Окно не попадает на скриншоты, поэтому Gemini не видит свои прошлые ответы. Побочный эффект: окно "
-                "не видно и при записи или демонстрации экрана.",
-                "Вікно не потрапляє на скриншоти, тому Gemini не бачить своїх попередніх відповідей. Побічний ефект: "
-                "вікно не видно й під час запису чи демонстрації екрана.",
-                "The window is left out of screenshots, so Gemini doesn't see its own previous answers. Side effect: "
-                "it is also invisible in screen recordings and screen sharing.")),
+        Field("exclude_from_capture", True, T("Скрывать окна от захвата экрана", "Приховувати вікна від захоплення екрана",
+                                              "Hide windows from screen capture"),
+              T("Окна программы не попадают на скриншоты, поэтому Gemini не видит свои прошлые ответы. Побочный эффект: "
+                "их не видно и при записи или демонстрации экрана.",
+                "Вікна програми не потрапляють на скриншоти, тому Gemini не бачить своїх попередніх відповідей. "
+                "Побічний ефект: їх не видно й під час запису чи демонстрації екрана.",
+                "The app's windows are left out of screenshots, so Gemini doesn't see its own previous answers. "
+                "Side effect: they are also invisible in screen recordings and screen sharing.")),
+    )),
+    Section("answers", T("Окна ответов", "Вікна відповідей", "Answer windows"), (
+        Field("position", "below", T("Где открывать новое окно", "Де відкривати нове вікно", "Where new windows open"),
+              T("Окна открываются лесенкой, если открыто несколько. Если перетащить окно ответа мышью, новые будут "
+                "открываться там же.",
+                "Вікна відкриваються драбинкою, якщо відкрито кілька. Якщо перетягнути вікно відповіді мишею, нові "
+                "відкриватимуться там само.",
+                "Several windows open in a cascade. Drag an answer window and new ones will open in the same place."),
+              kind="select", options=(
+                  ("below", T("Под строкой состояния", "Під рядком стану", "Below the status window")),
+                  ("custom", T("Там, куда перетащено последнее окно", "Там, куди перетягнуто останнє вікно",
+                               "Where the last window was dragged")),
+              )),
+        Field("x", 0, T("X", "X", "X"), kind="hidden"),
+        Field("y", 0, T("Y", "Y", "Y"), kind="hidden"),
+        Field("width", 0, T("Ширина нового окна, px", "Ширина нового вікна, px", "New window width, px"),
+              T("0 — как у строки состояния. Проще растянуть любое окно ответа мышью — новые откроются такими же.",
+                "0 — як у рядка стану. Простіше розтягнути будь-яке вікно відповіді мишею — нові відкриються такими ж.",
+                "0 means the status window width. Easier: stretch any answer window and new ones open the same size."),
+              min=0, max=3000, step=10),
+        Field("height", 0, T("Высота нового окна, px", "Висота нового вікна, px", "New window height, px"),
+              T("0 — окно растёт вместе с ответом, до максимальной высоты.",
+                "0 — вікно росте разом із відповіддю, до максимальної висоти.",
+                "0 means the window grows with the answer, up to the maximum height."),
+              min=0, max=3000, step=10),
+        Field("max_height_ratio", 0.6, T("Максимальная высота, доля экрана", "Максимальна висота, частка екрана",
+                                         "Maximum height, share of the screen"),
+              T("Когда высота подстраивается под ответ.", "Коли висота підлаштовується під відповідь.",
+                "When the height fits the answer."),
+              min=0.2, max=0.95, step=0.05),
+    ), description=T(
+        "Каждый ответ открывается в своём окне и висит, пока вы его не закроете (✕). Закрыть последнее — горячей "
+        "клавишей, все сразу — в трее.",
+        "Кожна відповідь відкривається у своєму вікні й висить, доки ви його не закриєте (✕). Закрити останнє — "
+        "гарячою клавішею, усі одразу — у треї.",
+        "Each answer opens in its own window and stays until you close it (✕). Close the latest with a hotkey, "
+        "all of them from the tray.",
     )),
     Section("history", T("История", "Історія", "History"), (
         Field("enabled", True, T("Вести историю", "Вести історію", "Keep history"),
@@ -335,18 +370,21 @@ SCHEMA: tuple[Section, ...] = (
         "“not a question”, repeat or error. Open it with the History button at the top or from the tray.",
     )),
     Section("hotkeys", T("Горячие клавиши", "Гарячі клавіші", "Hotkeys"), (
-        _hotkey("toggle", "ctrl+alt+h", T("Показать / скрыть окно", "Показати / сховати вікно", "Show / hide window")),
+        _hotkey("toggle", "ctrl+alt+h", T("Показать / скрыть строку состояния", "Показати / сховати рядок стану",
+                                          "Show / hide the status window")),
         _hotkey("ask", "ctrl+alt+a", T("Спросить вручную (скриншот + последние реплики)",
                                        "Запитати вручну (скриншот + останні репліки)",
                                        "Ask manually (screenshot + recent speech)")),
-        _hotkey("clear", "ctrl+alt+x", T("Убрать текущий ответ", "Прибрати поточну відповідь", "Clear the current answer")),
+        _hotkey("clear", "ctrl+alt+x", T("Закрыть последнее окно ответа", "Закрити останнє вікно відповіді",
+                                         "Close the latest answer window")),
         _hotkey("pause", "ctrl+alt+p", T("Пауза / продолжить", "Пауза / продовжити", "Pause / resume")),
         _hotkey("move", "ctrl+alt+m", T("Двигать и растягивать окно (вкл / выкл)", "Рухати й розтягувати вікно (увімк / вимк)",
                                         "Move and resize the window (on / off)")),
         _hotkey("next_preset", "ctrl+alt+n", T("Следующий пресет", "Наступний пресет", "Next preset")),
-        _hotkey("scroll_up", "ctrl+alt+up", T("Прокрутить ответ вверх", "Прокрутити відповідь угору", "Scroll the answer up")),
-        _hotkey("scroll_down", "ctrl+alt+down", T("Прокрутить ответ вниз", "Прокрутити відповідь униз",
-                                                  "Scroll the answer down")),
+        _hotkey("scroll_up", "ctrl+alt+up", T("Прокрутить последний ответ вверх", "Прокрутити останню відповідь угору",
+                                              "Scroll the latest answer up")),
+        _hotkey("scroll_down", "ctrl+alt+down", T("Прокрутить последний ответ вниз", "Прокрутити останню відповідь униз",
+                                                  "Scroll the latest answer down")),
         _hotkey("settings", "ctrl+alt+s", T("Открыть настройки", "Відкрити налаштування", "Open settings")),
         _hotkey("quit", "ctrl+alt+q", T("Выход", "Вихід", "Quit")),
     ), description=T(
@@ -385,6 +423,11 @@ def _migrate(data: dict) -> None:
     old_speech = data.get("whisper", {}).pop("language", None)
     if old_speech is not None:
         data.setdefault("language", {}).setdefault("speech", old_speech)
+    # Ответы переехали в отдельные окна: высоту старого общего окна (её растягивали ради ответов)
+    # и его максимальную высоту получают окна ответов, а строка состояния снова подстраивается под текст.
+    overlay = data.get("overlay", {})
+    if "answers" not in data and "max_height_ratio" in overlay:
+        data["answers"] = {"height": overlay.pop("height", 0), "max_height_ratio": overlay.pop("max_height_ratio")}
 
 
 def load_config(path: Path = CONFIG_PATH) -> dict:

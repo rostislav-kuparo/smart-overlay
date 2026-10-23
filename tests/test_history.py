@@ -3,6 +3,7 @@ import json
 import time
 
 import pytest
+from PySide6.QtCore import Qt
 
 from smart_overlay.config import DEFAULTS
 from smart_overlay.history import HistoryStore
@@ -146,6 +147,29 @@ def test_ask_again_and_answer_phrase_use_saved_context(store):
     assert "Вопрос: А что такое GIL" in request and "— Начнём" in request and screenshot is None
     reasked = [e for e in store.events() if e["kind"] == "reask"]
     assert len(reasked) == 2 and all(e["status"] == "answered" for e in reasked)
+
+
+class SlowGemini(FakeGemini):
+    def answer(self, request, screenshot):
+        for chunk in super().answer(request, screenshot):
+            time.sleep(0.05)
+            yield chunk
+
+
+def test_answers_do_not_interrupt_each_other(store):
+    pipeline = make_pipeline(store, SlowGemini())
+    done, chunks = [], {}
+    # Без цикла событий Qt сигналы из рабочих потоков нужно принимать напрямую, в потоке отправителя
+    direct = Qt.ConnectionType.DirectConnection
+    pipeline._events.answer_done.connect(done.append, direct)
+    pipeline._events.answer_chunk.connect(lambda answer_id, chunk: chunks.setdefault(answer_id, []).append(chunk), direct)
+    first = pipeline._workers.submit(pipeline._answer, "Первый вопрос", kind="manual")
+    second = pipeline._workers.submit(pipeline._answer, "Второй вопрос", kind="manual")
+    first.result()
+    second.result()
+    assert len(done) == 2 and len(chunks) == 2
+    assert all("".join(parts) == "**Ответ** готов." for parts in chunks.values())
+    assert [e["status"] for e in store.events()] == ["answered", "answered"]
 
 
 def test_history_disabled_records_nothing(store):

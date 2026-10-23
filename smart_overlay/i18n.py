@@ -98,11 +98,13 @@ MESSAGES: dict[str, T] = {
     "tray.llm_check": T("Проверять вопрос через Gemini", "Перевіряти питання через Gemini", "Confirm questions with Gemini"),
     "tray.preset": T("Пресет", "Пресет", "Preset"),
     "tray.no_preset": T("Без пресета", "Без пресету", "No preset"),
-    "tray.show_window": T("Показывать окно", "Показувати вікно", "Show window"),
+    "tray.show_window": T("Показывать строку состояния", "Показувати рядок стану", "Show status window"),
+    "tray.close_answers": T("Закрыть все ответы ({n})", "Закрити всі відповіді ({n})", "Close all answers ({n})"),
+    "answer.copy": T("Копировать ответ", "Копіювати відповідь", "Copy answer"),
+    "answer.close": T("Закрыть", "Закрити", "Close"),
     "tray.click_through": T("Пропускать клики сквозь окно", "Пропускати кліки крізь вікно", "Click-through window"),
-    "tray.move": T("Двигать и растягивать окно", "Рухати й розтягувати вікно", "Move and resize window"),
+    "tray.move": T("Двигать строку состояния", "Рухати рядок стану", "Move status window"),
     "tray.ask": T("Спросить сейчас", "Запитати зараз", "Ask now"),
-    "tray.clear": T("Убрать ответ", "Прибрати відповідь", "Clear answer"),
     "tray.quit": T("Выход", "Вихід", "Quit"),
     # ---------- мониторы ----------
     "monitor.all": T("Все мониторы ({w}×{h})", "Усі монітори ({w}×{h})", "All monitors ({w}×{h})"),
@@ -214,8 +216,9 @@ MESSAGES: dict[str, T] = {
     "web.listening": T("Слушать звук", "Слухати звук", "Listen to audio"),
     "web.listening_help": T("Выключите, чтобы поставить программу на паузу.", "Вимкніть, щоб поставити програму на паузу.",
                             "Turn off to pause the app."),
-    "web.overlay_visible": T("Показывать окно ответа", "Показувати вікно відповіді", "Show the answer window"),
-    "web.move_window": T("Двигать и растягивать окно", "Рухати й розтягувати вікно", "Move and resize the window"),
+    "web.overlay_visible": T("Показывать строку состояния", "Показувати рядок стану", "Show the status window"),
+    "web.move_window": T("Двигать и растягивать строку состояния", "Рухати й розтягувати рядок стану",
+                         "Move and resize the status window"),
     "web.move_help": T(
         "Нужно, только если включены сквозные клики: временно делает окно «хватаемым» мышью. "
         "Место и размер запоминаются сами.",

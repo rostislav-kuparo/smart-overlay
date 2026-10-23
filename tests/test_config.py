@@ -47,6 +47,15 @@ def test_old_whisper_language_is_migrated(tmp_path):
     assert cfg["whisper"]["beam_size"] == 2
 
 
+def test_old_answer_window_size_moves_to_answer_windows(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text("[overlay]\nwidth = 985\nheight = 176\nmax_height_ratio = 0.95\n", encoding="utf-8")
+    cfg = load_config(path)
+    assert cfg["overlay"]["width"] == 985 and cfg["overlay"]["height"] == 0
+    assert cfg["answers"]["height"] == 176 and cfg["answers"]["max_height_ratio"] == 0.95
+    assert "max_height_ratio" not in cfg["overlay"]
+
+
 def test_store_update_saves_and_switches_language(tmp_path):
     store = ConfigStore(tmp_path / "config.toml")
     old, new = store.update(lambda cfg: cfg["language"].__setitem__("interface", "uk"))

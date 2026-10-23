@@ -1,4 +1,4 @@
-"""Приложение целиком: оверлей, конвейер, горячие клавиши, значок в трее и окно настроек."""
+"""Приложение целиком: строка состояния, окна ответов, конвейер, горячие клавиши, трей и окно настроек."""
 
 import json
 import logging
@@ -13,7 +13,7 @@ from .gemini_client import resolve_api_key
 from .history import HistoryStore
 from .hotkeys import HotkeyListener, pretty_hotkey
 from .i18n import msg
-from .overlay import Overlay
+from .overlay import AnswerWindow, StatusOverlay
 from .pipeline import Events, Pipeline
 from .settings_server import PACKAGE_DIR, SettingsServer
 
@@ -22,6 +22,7 @@ log = logging.getLogger(__name__)
 ICON_PATH = PACKAGE_DIR / "assets" / "icon.png"
 HOTKEYS_RESUME_MS = 20_000  # если окно настроек закрыли во время записи сочетания
 HISTORY_PRUNE_MS = 3_600_000  # раз в час удаляем записи старше срока хранения
+CASCADE_STEP, CASCADE_LIMIT = 28, 8  # открытые окна ответов ставятся лесенкой
 
 
 class Controller(QObject):
@@ -39,14 +40,17 @@ class Controller(QObject):
         self.runtime = {"listening": True, "overlay_visible": True, "move_mode": False}
 
         self.events = Events()
-        self.overlay = Overlay(cfg["overlay"])
+        self.overlay = StatusOverlay(cfg["overlay"])
         self.overlay.set_preset(cfg["presets"]["active"])
         self.overlay.moved.connect(self._on_overlay_moved)
         self.overlay.resized.connect(self._on_overlay_resized)
+        self.answers: dict[int, AnswerWindow] = {}  # открытые окна ответов, в порядке открытия
         self.events.status.connect(self._on_status)
         self.events.transcript.connect(self.overlay.set_transcript)
-        self.events.question.connect(self.overlay.start_answer)
-        self.events.answer_chunk.connect(self.overlay.append_answer)
+        self.events.question.connect(self._open_answer)
+        self.events.answer_chunk.connect(lambda answer_id, chunk: self._with_answer(answer_id, "append", chunk))
+        self.events.answer_done.connect(lambda answer_id: self._with_answer(answer_id, "finish"))
+        self.events.answer_failed.connect(lambda answer_id, error: self._with_answer(answer_id, "fail", error))
         self.events.hotkey.connect(self._on_hotkey)
         self.settings_changed.connect(self._apply)
         self.control_requested.connect(self._on_control)
@@ -117,6 +121,8 @@ class Controller(QObject):
             self.pipeline.update_config(new)
         if old["overlay"] != new["overlay"]:
             self.overlay.apply_config(new["overlay"])
+            for window in self.answers.values():
+                window.apply_style(new["overlay"])
         if old["presets"]["active"] != new["presets"]["active"]:
             self.overlay.set_preset(new["presets"]["active"])
         if old["hotkeys"] != new["hotkeys"]:
@@ -141,6 +147,68 @@ class Controller(QObject):
     def _on_overlay_resized(self, x: int, y: int, width: int, height: int) -> None:
         def place(cfg: dict) -> None:
             cfg["overlay"].update(position="custom", x=x, y=y, width=width, height=height)
+
+        self._apply(*self.store.update(place))
+
+    # ---------- окна ответов ----------
+
+    @Slot(int, str)
+    def _open_answer(self, answer_id: int, question: str) -> None:
+        """Каждый ответ — в своём окне. Окна открываются лесенкой и висят, пока их не закроют."""
+        cfg = self.store.get()
+        window = AnswerWindow(cfg["overlay"], answer_id, question, cfg["presets"]["active"],
+                              cfg["answers"]["max_height_ratio"])
+        window.closed.connect(self._on_answer_closed)
+        window.moved.connect(self._remember_answer_place)
+        window.resized.connect(self._remember_answer_size)
+        place = cfg["answers"]
+        if place["position"] == "custom":
+            x, y = place["x"], place["y"]
+        else:
+            strip = self.overlay.frameGeometry()
+            x, y = strip.left(), strip.bottom() + 10
+        step = CASCADE_STEP * (len(self.answers) % CASCADE_LIMIT)
+        self.answers[answer_id] = window
+        window.place(x + step, y + step, place["width"] or cfg["overlay"]["width"], place["height"])
+        window.show()
+        self._tray_rebuild.start()
+
+    def _with_answer(self, answer_id: int, method: str, *args) -> None:
+        window = self.answers.get(answer_id)
+        if window is not None:  # окно могли закрыть, пока ответ ещё печатался
+            getattr(window, method)(*args)
+
+    @Slot(int)
+    def _on_answer_closed(self, answer_id: int) -> None:
+        window = self.answers.pop(answer_id, None)
+        if window is not None:
+            window.deleteLater()
+        self._tray_rebuild.start()
+
+    def _latest_answer(self) -> AnswerWindow | None:
+        return next(reversed(self.answers.values()), None)
+
+    def close_latest_answer(self) -> None:
+        if (window := self._latest_answer()) is not None:
+            window.close()
+
+    def close_all_answers(self) -> None:
+        for window in list(self.answers.values()):
+            window.close()
+
+    @Slot(int, int)
+    def _remember_answer_place(self, x: int, y: int) -> None:
+        """Окно ответа перетащили — новые будут открываться там же."""
+        def place(cfg: dict) -> None:
+            cfg["answers"].update(position="custom", x=x, y=y)
+
+        self._apply(*self.store.update(place))
+
+    @Slot(int, int, int, int)
+    def _remember_answer_size(self, x: int, y: int, width: int, height: int) -> None:
+        """Окно ответа растянули — новые будут открываться такого же размера и там же."""
+        def place(cfg: dict) -> None:
+            cfg["answers"].update(position="custom", x=x, y=y, width=width, height=height)
 
         self._apply(*self.store.update(place))
 
@@ -230,7 +298,8 @@ class Controller(QObject):
                         lambda on: self._set_setting("overlay", "click_through", on))
         self._add_check(menu, "tray.move", self.runtime["move_mode"], self.set_move_mode)
         menu.addAction(msg("tray.ask"), lambda: self.pipeline.ask_now())
-        menu.addAction(msg("tray.clear"), self.overlay.clear_answer)
+        if self.answers:
+            menu.addAction(msg("tray.close_answers", n=len(self.answers)), self.close_all_answers)
         menu.addSeparator()
         menu.addAction(msg("tray.quit"), self._app.quit)
         self._tray.setContextMenu(menu)
@@ -248,12 +317,12 @@ class Controller(QObject):
         actions = {
             "toggle": lambda: self.set_overlay_visible(not self.runtime["overlay_visible"]),
             "ask": self.pipeline.ask_now,
-            "clear": self.overlay.clear_answer,
+            "clear": self.close_latest_answer,
             "pause": lambda: self.set_listening(not self.runtime["listening"]),
             "move": lambda: self.set_move_mode(not self.runtime["move_mode"]),
             "next_preset": self._next_preset,
-            "scroll_up": lambda: self.overlay.scroll(-1),
-            "scroll_down": lambda: self.overlay.scroll(1),
+            "scroll_up": lambda: (window := self._latest_answer()) and window.scroll(-1),
+            "scroll_down": lambda: (window := self._latest_answer()) and window.scroll(1),
             "settings": self.server.open_window,
             "quit": self._app.quit,
         }
@@ -298,6 +367,7 @@ class Controller(QObject):
             word = next(words, None)
             if word is None:
                 timer.stop()
+                self.events.answer_done.emit(0)
             else:
                 self.events.answer_chunk.emit(0, word + " ")
 
