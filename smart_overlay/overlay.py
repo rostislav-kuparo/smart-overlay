@@ -10,6 +10,7 @@
 
 import ctypes
 import html
+import math
 from datetime import datetime
 
 from PySide6.QtCore import QPoint, QRect, Qt, QTimer, Signal, Slot
@@ -146,16 +147,21 @@ class FloatingWindow(QWidget):
         fixed_height = 0 — высота по содержимому (область ответа — до max_ratio высоты экрана),
         иначе окно ровно такой высоты, а длинный ответ прокручивается.
         """
+        # Рамку панели тоже учитываем: если окно ниже минимума раскладки, Qt сам дотягивает его на пару
+        # пикселей, окно дёргается на каждом куске ответа, и Windows перестаёт показывать новый текст.
         margins = self._inner.contentsMargins()
-        inner_width = width - margins.left() - margins.right()
+        frame = self._panel.frameWidth()
+        inner_width = width - margins.left() - margins.right() - 2 * frame
         visible = [w for w in self._labels if not w.isHidden()]
-        used = margins.top() + margins.bottom()
+        used = margins.top() + margins.bottom() + 2 * frame
         used += sum(w.heightForWidth(inner_width) for w in visible) + self._inner.spacing() * max(0, len(visible) - 1)
         total = max(MIN_HEIGHT, min(fixed_height, area.height())) if fixed_height else used
         if self._browser is not None and not self._browser.isHidden():
-            document = self._browser.document()
-            document.setTextWidth(inner_width - 8)
-            needed = int(document.size().height()) + 4
+            # Меряем копию: ширину самого документа QTextBrowser держит по своей области, трогать её нельзя
+            document = self._browser.document().clone(self._browser)
+            document.setTextWidth(inner_width)
+            needed = math.ceil(document.size().height()) + 2
+            document.deleteLater()
             if fixed_height:
                 answer_height = total - used - self._inner.spacing()
             else:
