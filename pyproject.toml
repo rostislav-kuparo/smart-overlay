@@ -16,6 +16,8 @@ dependencies = [
     "mss",
     "Pillow",
     "google-genai",
+    "httpx",
+    "ziamath",
     "PySide6-Essentials",
     "numpy",
 ]

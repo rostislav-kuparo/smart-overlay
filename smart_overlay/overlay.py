@@ -3,9 +3,10 @@
 Строка состояния (StatusOverlay) живёт всё время: состояние, пресет и последняя распознанная фраза.
 Каждый ответ открывается в своём окне (AnswerWindow) и висит, пока его не закроют.
 
-Окна не берут фокус. Их можно таскать мышью за любое место, растягивать за края и углы, колёсико
-прокручивает ответ. Строка состояния может пропускать клики сквозь себя (настройка), окна ответов —
-нет: их нужно уметь закрыть.
+Окна не берут фокус сами. Их можно таскать мышью, растягивать за края и углы, колёсико прокручивает
+ответ. Текст ответа выделяется мышью, поэтому окно ответа таскается за заголовок и поля, а фокус
+получает, только когда в нём что-то выделили: иначе Ctrl+C уйдёт в другую программу. Строка состояния
+может пропускать клики сквозь себя (настройка), окна ответов — нет: их нужно уметь закрыть.
 """
 
 import ctypes
@@ -13,11 +14,14 @@ import html
 import math
 from datetime import datetime
 
-from PySide6.QtCore import QPoint, QRect, Qt, QTimer, Signal, Slot
-from PySide6.QtGui import QColor, QGuiApplication, QPainter
-from PySide6.QtWidgets import QApplication, QFrame, QLabel, QLayout, QTextBrowser, QToolButton, QVBoxLayout, QWidget
+from PySide6.QtCore import QMimeData, QPoint, QRect, Qt, QTimer, Signal, Slot
+from PySide6.QtGui import QColor, QFontInfo, QFontMetricsF, QGuiApplication, QPainter, QTextCharFormat, QTextCursor
+from PySide6.QtWidgets import (
+    QApplication, QFrame, QLabel, QLayout, QMenu, QTextBrowser, QToolButton, QVBoxLayout, QWidget,
+)
 
 from .i18n import msg
+from .math_render import Formula, render_formula, replace_math
 
 WDA_NONE = 0x0
 WDA_EXCLUDEFROMCAPTURE = 0x11
@@ -30,7 +34,11 @@ PAD = 14
 TRANSCRIPT_MAX_CHARS = 180
 RESIZE_MARGIN = 8  # ширина «рамки», за которую окно растягивается
 MIN_WIDTH, MIN_HEIGHT = 280, 60
-BUTTONS_WIDTH = 64  # место справа в заголовке окна ответа под кнопки
+BUTTONS_WIDTH = 92  # место справа в заголовке окна ответа под кнопки
+BUTTON_STEP = 28
+TEXT_COLOR = "#ececf1"
+MATH_SCALE = 1.1  # шрифт формул визуально мельче шрифта интерфейса того же размера
+OBJECT_CHAR = "\ufffc"  # так документ Qt обозначает картинку в тексте
 EDGE_CURSORS = {
     "l": Qt.CursorShape.SizeHorCursor, "r": Qt.CursorShape.SizeHorCursor,
     "t": Qt.CursorShape.SizeVerCursor, "b": Qt.CursorShape.SizeVerCursor,
@@ -46,6 +54,7 @@ STYLE = """
 }}
 #panel[moving="true"] {{ border: 2px dashed #8b7bff; }}
 QLabel, QTextBrowser {{ background: transparent; border: none; color: #ececf1; font-size: {fs}pt; }}
+QTextBrowser {{ selection-background-color: rgba(139, 123, 255, 130); selection-color: #ffffff; }}
 #hint {{ color: #c9c0ff; font-size: {small}pt; }}
 #status, #meta {{ color: #a1a1aa; font-size: {small}pt; }}
 #transcript {{ color: #8b8b95; font-size: {small}pt; font-style: italic; }}
@@ -334,10 +343,101 @@ class StatusOverlay(FloatingWindow):
         self._fit()
 
 
+class AnswerView(QTextBrowser):
+    """Текст ответа: Markdown с формулами. Выделяется мышью, формулы копируются как LaTeX."""
+
+    def __init__(self):
+        super().__init__(openLinks=False)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.viewport().setCursor(Qt.CursorShape.IBeamCursor)
+        self.document().setDocumentMargin(0)
+        self.document().setIndentWidth(18)
+        self.document().setUndoRedoEnabled(False)
+        self._formulas: dict[str, Formula] = {}  # адрес картинки в документе → формула
+
+    def show_markdown(self, text: str) -> None:
+        """Показывает текст заново, не сбрасывая выделение: ответ может ещё печататься."""
+        selection = self.textCursor()
+        anchor, position = selection.anchor(), selection.position()
+        self.setMarkdown(replace_math(text, self._formula_markdown))
+        self.fit_formulas()
+        if anchor != position:
+            end = self.document().characterCount() - 1
+            cursor = self.textCursor()
+            cursor.setPosition(min(anchor, end))
+            cursor.setPosition(min(position, end), QTextCursor.MoveMode.KeepAnchor)
+            self.setTextCursor(cursor)
+
+    def _formula_markdown(self, latex: str, display: bool, source: str) -> str:
+        font = self.document().defaultFont()
+        formula = render_formula(
+            latex, display, source, QFontInfo(font).pixelSize() * MATH_SCALE, TEXT_COLOR,
+            QFontMetricsF(font).xHeight() / 2, self.devicePixelRatioF(),
+        )
+        if formula is None:
+            return f"`{source}`"  # пусть лучше будет виден исходный текст, чем разметка его испортит
+        url = f"math:{id(formula)}"
+        self._formulas[url] = formula
+        image = f"![formula]({url})"  # без подписи Qt картинку выбрасывает
+        return f"\n\n{image}\n\n" if display else image
+
+    def loadResource(self, kind: int, name):
+        formula = self._formulas.get(name.toString())
+        return formula.image if formula is not None else super().loadResource(kind, name)
+
+    def fit_formulas(self) -> None:
+        """Ставит формулы на базовую линию и ужимает те, что шире окна."""
+        document = self.document()
+        available = self.viewport().width()
+        cursor = document.find(OBJECT_CHAR)
+        while not cursor.isNull():
+            image_format = cursor.charFormat().toImageFormat()
+            formula = self._formulas.get(image_format.name())
+            if formula is not None:
+                scale = min(1.0, available / formula.width) if available > 0 else 1.0
+                image_format.setWidth(formula.width * scale)
+                image_format.setHeight(formula.height * scale)
+                image_format.setVerticalAlignment(QTextCharFormat.VerticalAlignment.AlignMiddle)
+                cursor.setCharFormat(image_format)
+                if formula.display:
+                    block_format = cursor.blockFormat()
+                    block_format.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+                    cursor.setBlockFormat(block_format)
+            cursor = document.find(OBJECT_CHAR, cursor)
+
+    def selected_text(self) -> str:
+        """Выделенный текст, где вместо картинок стоит LaTeX. Пустая строка — ничего не выделено."""
+        selection = self.textCursor()
+        probe = QTextCursor(self.document())
+        position = selection.selectionStart()
+        parts = []
+        for char in selection.selectedText():
+            position += 2 if ord(char) > 0xFFFF else 1  # позиции Qt считаются в единицах UTF-16
+            if char == OBJECT_CHAR:
+                probe.setPosition(position)
+                formula = self._formulas.get(probe.charFormat().toImageFormat().name())
+                parts.append(formula.source if formula is not None else "")
+            else:
+                parts.append("\n" if char in "\u2028\u2029" else char)
+        return "".join(parts)
+
+    def createMimeDataFromSelection(self) -> QMimeData:
+        data = QMimeData()
+        data.setText(self.selected_text())
+        return data
+
+    def mouseReleaseEvent(self, event) -> None:
+        super().mouseReleaseEvent(event)
+        if self.textCursor().hasSelection():
+            ctypes.windll.user32.SetForegroundWindow(int(self.window().winId()))
+
+
 class AnswerWindow(FloatingWindow):
     """Отдельное окно одного ответа. Живёт, пока его не закроют."""
 
     closed = Signal(int)
+    stop_requested = Signal(int)
 
     def __init__(self, style_cfg: dict, answer_id: int, question: str, preset: str, max_height_ratio: float):
         super().__init__(style_cfg)
@@ -349,29 +449,35 @@ class AnswerWindow(FloatingWindow):
         self._meta = QLabel(meta, objectName="meta", wordWrap=True, textFormat=Qt.TextFormat.PlainText)
         self._error = QLabel(objectName="error", wordWrap=True, textFormat=Qt.TextFormat.PlainText)
         self._error.hide()
-        self._browser = QTextBrowser(openLinks=False)
-        self._browser.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._browser.document().setDocumentMargin(0)
-        self._browser.document().setIndentWidth(18)
+        self._browser = AnswerView()
         self._browser.setPlainText("…")
+        self._browser.customContextMenuRequested.connect(self._show_menu)
         self._labels = [self._question, self._meta, self._error]
         self._question.setContentsMargins(0, 0, BUTTONS_WIDTH, 0)  # справа от вопроса — кнопки
         for widget in (self._question, self._meta, self._error, self._browser):
             self._inner.addWidget(widget)
         self._inner.addStretch(1)
+        # Мышь над текстом ответа достаётся ему (выделение), всё остальное панель передаёт окну
+        self._panel.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        self._panel.setMouseTracking(True)
+        for label in self._labels:
+            label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
-        # Кнопки — дети самого окна, а не панели: панель пропускает мышь насквозь, а кнопки должны нажиматься
+        self._stop_button = QToolButton(self, text="■", toolTip=msg("answer.stop"))
         self._copy_button = QToolButton(self, text="⧉", toolTip=msg("answer.copy"))
         self._close_button = QToolButton(self, text="✕", toolTip=msg("answer.close"))
-        for button in (self._copy_button, self._close_button):
+        for button in (self._stop_button, self._copy_button, self._close_button):
             button.setFixedSize(24, 22)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._stop_button.clicked.connect(self.stop)
         self._copy_button.clicked.connect(self.copy_answer)
         self._copy_button.hide()  # появится вместе с первыми словами ответа
         self._close_button.clicked.connect(self.close)
 
         self._text = ""
+        self._meta_text = meta
+        self._stopped = False
         self._anchor = QPoint(0, 0)
         self._width = 520
         self._fixed_height = 0
@@ -396,11 +502,15 @@ class AnswerWindow(FloatingWindow):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        top = PAD - 6
-        self._close_button.move(self.width() - PAD - 24, top)
-        self._copy_button.move(self.width() - PAD - 52, top)
-        self._copy_button.raise_()
-        self._close_button.raise_()
+        self._place_buttons()
+
+    def _place_buttons(self) -> None:
+        x = self.width() - PAD - 24
+        for button in (self._close_button, self._copy_button, self._stop_button):
+            if not button.isHidden():
+                button.move(x, PAD - 6)
+                button.raise_()
+                x -= BUTTON_STEP
 
     def _relayout_live(self, width: int, height: int) -> None:
         self._layout_content(width, height, self._max_ratio, self._screen_area(self.geometry().center()))
@@ -409,22 +519,47 @@ class AnswerWindow(FloatingWindow):
         self._anchor = self.pos()
         if mode != "move":  # растянули — дальше размер этого окна не меняется сам
             self._width, self._fixed_height = self.width(), self.height()
+            self._show_text()
 
-    def append(self, chunk: str) -> None:
-        self._text += chunk
-        self._copy_button.show()
+    def apply_style(self, style_cfg: dict) -> None:
+        super().apply_style(style_cfg)
+        if self._text:  # формулы — картинки: при смене шрифта их нужно нарисовать заново
+            self._show_text()
+
+    def _show_text(self) -> None:
         scrollbar = self._browser.verticalScrollBar()
         position = scrollbar.value()
-        self._browser.setMarkdown(self._text)
+        self._browser.show_markdown(self._text)
         self._fit()
         scrollbar.setValue(position)
 
+    def append(self, chunk: str) -> None:
+        if self._stopped:  # куски, которые успели прийти после нажатия ■
+            return
+        self._text += chunk
+        self._copy_button.show()
+        self._place_buttons()
+        self._show_text()
+
     def finish(self) -> None:
+        self._stop_button.hide()
+        self._place_buttons()
         if not self._text:
             self._browser.hide()
             self._fit()
 
+    @Slot()
+    def stop(self) -> None:
+        self._stopped = True
+        self._meta.setText(f"{self._meta_text} · {msg('answer.stopped')}")
+        self.finish()
+        self.stop_requested.emit(self.answer_id)
+
     def fail(self, error: str) -> None:
+        if self._stopped:
+            return
+        self._stop_button.hide()
+        self._place_buttons()
         self._error.setText(error)
         self._error.show()
         if not self._text:
@@ -433,10 +568,18 @@ class AnswerWindow(FloatingWindow):
 
     @Slot()
     def copy_answer(self) -> None:
-        if self._text:
-            QApplication.clipboard().setText(self._text)
+        text = self._browser.selected_text() or self._text
+        if text:
+            QApplication.clipboard().setText(text)
             self._copy_button.setText("✓")
             QTimer.singleShot(1200, lambda: self._copy_button.setText("⧉"))
+
+    @Slot(QPoint)
+    def _show_menu(self, position: QPoint) -> None:
+        menu = QMenu(self)
+        menu.addAction(msg("answer.copy_menu"), self.copy_answer)
+        menu.addAction(msg("answer.select_all"), self._browser.selectAll)
+        menu.exec(self._browser.viewport().mapToGlobal(position))
 
     def scroll(self, direction: int) -> None:
         scrollbar = self._browser.verticalScrollBar()

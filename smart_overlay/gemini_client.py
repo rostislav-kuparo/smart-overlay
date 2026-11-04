@@ -3,12 +3,17 @@
 import os
 from collections.abc import Iterator
 
+import httpx
 from google import genai
 from google.genai import types
 from pydantic import BaseModel
 
 from .config import MODEL_LANGUAGE_NAMES, active_preset
 from .i18n import msg
+
+# Соединение с сервером живёт между запросами: без этого каждая проверка вопроса заново открывает TLS (~80 мс)
+KEEPALIVE_S = 120
+MATH_RULE = "Формулы пиши в LaTeX: $...$ внутри строки, $$...$$ отдельной строкой. Простые числа — обычным текстом."
 
 
 class QuestionCheck(BaseModel):
@@ -45,7 +50,7 @@ def build_instructions(cfg: dict) -> tuple[str, str]:
             f"\n\nКонтекст задачи от пользователя (пресет «{preset['name']}»). "
             f"Учитывай его, чтобы быстрее понять, о чём идёт речь:\n{preset['context']}"
         )
-    answer = cfg["prompts"]["answer"] + context
+    answer = f"{cfg['prompts']['answer']}\n{MATH_RULE}{context}"
     language = cfg["language"]["answer"]
     if language in MODEL_LANGUAGE_NAMES:
         answer += (
@@ -61,7 +66,10 @@ class GeminiClient:
         api_key = resolve_api_key(gemini)
         if not api_key:
             raise RuntimeError(msg("error.no_key"))
-        self._client = genai.Client(api_key=api_key)
+        self._client = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(client_args={"limits": httpx.Limits(keepalive_expiry=KEEPALIVE_S)}),
+        )
         answer_instruction, check_instruction = build_instructions(cfg)
         self._check_model = gemini["check_model"]
         self._check_config = types.GenerateContentConfig(
@@ -90,8 +98,12 @@ class GeminiClient:
         contents: list = [request]
         if screenshot_jpeg:
             contents.insert(0, types.Part.from_bytes(data=screenshot_jpeg, mime_type="image/jpeg"))
-        for chunk in self._client.models.generate_content_stream(
+        stream = self._client.models.generate_content_stream(
             model=self._answer_model, contents=contents, config=self._answer_config
-        ):
-            if chunk.text:
-                yield chunk.text
+        )
+        try:
+            for chunk in stream:
+                if chunk.text:
+                    yield chunk.text
+        finally:
+            stream.close()  # ответ остановили — обрываем соединение, чтобы модель не писала дальше

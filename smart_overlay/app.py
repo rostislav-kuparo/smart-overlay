@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import threading
 
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
 from PySide6.QtGui import QActionGroup, QIcon
@@ -13,8 +14,9 @@ from .gemini_client import resolve_api_key
 from .history import HistoryStore
 from .hotkeys import HotkeyListener, pretty_hotkey
 from .i18n import msg
+from .math_render import warm_up as warm_up_math
 from .overlay import AnswerWindow, StatusOverlay
-from .pipeline import Events, Pipeline
+from .pipeline import Events, Pipeline, cancel_answer
 from .settings_server import PACKAGE_DIR, SettingsServer
 
 log = logging.getLogger(__name__)
@@ -95,6 +97,7 @@ class Controller(QObject):
 
         app.aboutToQuit.connect(self._shutdown)
         self.overlay.show()
+        threading.Thread(target=warm_up_math, name="math", daemon=True).start()
         if demo:
             self._run_demo()
         else:
@@ -159,6 +162,7 @@ class Controller(QObject):
         window = AnswerWindow(cfg["overlay"], answer_id, question, cfg["presets"]["active"],
                               cfg["answers"]["max_height_ratio"])
         window.closed.connect(self._on_answer_closed)
+        window.stop_requested.connect(cancel_answer)
         window.moved.connect(self._remember_answer_place)
         window.resized.connect(self._remember_answer_size)
         place = cfg["answers"]
@@ -180,6 +184,7 @@ class Controller(QObject):
 
     @Slot(int)
     def _on_answer_closed(self, answer_id: int) -> None:
+        cancel_answer(answer_id)  # закрытый ответ никто не прочитает — незачем тратить на него токены
         window = self.answers.pop(answer_id, None)
         if window is not None:
             window.deleteLater()

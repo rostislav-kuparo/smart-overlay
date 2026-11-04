@@ -6,7 +6,7 @@ import pytest
 from smart_overlay.config import (
     DEFAULTS, SCHEMA, ConfigStore, active_preset, load_config, restart_needed, save_config, validate,
 )
-from smart_overlay.gemini_client import build_instructions
+from smart_overlay.gemini_client import MATH_RULE, build_instructions
 from smart_overlay.i18n import MESSAGES, T, set_language
 
 
@@ -123,7 +123,7 @@ def test_instructions_include_preset_and_answer_language():
     cfg["presets"]["active"] = ""
     cfg["language"]["answer"] = "auto"
     answer, check = build_instructions(cfg)
-    assert answer == cfg["prompts"]["answer"] and check == cfg["prompts"]["check"]
+    assert answer == f"{cfg['prompts']['answer']}\n{MATH_RULE}" and check == cfg["prompts"]["check"]
 
 
 def test_restart_needed_only_for_recognition_settings():

@@ -1,7 +1,7 @@
 """История: распознанные фразы, найденные вопросы и ответы — в SQLite рядом с настройками.
 
 Каждое срабатывание детектора записывается «событием» с итогом:
-- answering / answered / interrupted — ответ идёт, получен или прерван новым вопросом;
+- answering / answered / interrupted / stopped — ответ идёт, получен, прерван новым вопросом или остановлен вручную;
 - not_question — проверка Gemini решила, что это не вопрос;
 - repeat — вопрос совпал с недавним и пропущен;
 - error — ошибка проверки или ответа.
@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS phrases (
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY, session TEXT NOT NULL, ts REAL NOT NULL,
     kind TEXT NOT NULL,            -- auto | manual | reask
-    status TEXT NOT NULL,          -- answering | answered | interrupted | not_question | repeat | error
+    status TEXT NOT NULL,          -- answering | answered | interrupted | stopped | not_question | repeat | error
     heard TEXT DEFAULT '',         -- фраза, на которую сработал детектор
     question TEXT DEFAULT '',      -- формулировка вопроса после проверки
     answer TEXT DEFAULT '',
@@ -49,7 +49,7 @@ CREATE INDEX IF NOT EXISTS events_phrase ON events (phrase_id);
 
 # Фильтры списка в окне истории
 FILTERS = {
-    "answered": "status IN ('answering', 'answered', 'interrupted')",
+    "answered": "status IN ('answering', 'answered', 'interrupted', 'stopped')",
     "rejected": "status IN ('not_question', 'repeat')",
     "errors": "status = 'error'",
     "manual": "kind IN ('manual', 'reask')",

@@ -3,9 +3,10 @@
 Потоки:
 - audio  — захват звука и нарезка на фразы (Silero VAD);
 - asr    — распознавание фраз на GPU, поиск кандидатов в вопросы;
-- ask-*  — проверка вопроса и потоковый ответ Gemini (несколько штук параллельно).
+- ask-*  — проверка вопроса и потоковый ответ Gemini (несколько штук параллельно);
+- shot-* — скриншот, пока идёт проверка вопроса.
 
-Все фразы и все срабатывания детектора (с итогом: ответ, «не вопрос», повтор, ошибка) пишутся в историю.
+Все фразы и все срабатывания детектора (с итогом: ответ, остановлен, «не вопрос», повтор, ошибка) пишутся в историю.
 """
 
 import itertools
@@ -15,6 +16,7 @@ import threading
 import time
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import closing
 from difflib import SequenceMatcher
 
 from PySide6.QtCore import QObject, Signal
@@ -32,14 +34,24 @@ log = logging.getLogger(__name__)
 
 REPEAT_WINDOW_S = 60
 REPEAT_SIMILARITY = 0.85
+ASK_WORKERS = 6  # проверка нового вопроса не должна ждать, пока допишутся старые ответы
+GEMINI_SECTIONS = ("gemini", "prompts", "presets", "language")  # из них собирается клиент Gemini
 
 # Номера ответов общие для всех конвейеров: после перезапуска (смена настроек) хвост старого ответа
 # не перепутается с новым.
 _answer_ids = itertools.count(1)
+# Ответы, которые сейчас пишутся: номер → флаг «остановить». Тоже общие: окно могло пережить перезапуск конвейера.
+_running: dict[int, threading.Event] = {}
 
 
 def _ms_since(moment: float) -> int:
     return int((time.monotonic() - moment) * 1000)
+
+
+def cancel_answer(answer_id: int) -> None:
+    """Останавливает ответ. Поток заметит флаг на следующем куске ответа и оборвёт соединение."""
+    if (cancelled := _running.get(answer_id)) is not None:
+        cancelled.set()
 
 
 class Events(QObject):
@@ -62,7 +74,8 @@ class Pipeline:
         self._phrases: queue.Queue = queue.Queue()
         self._recent: deque[tuple[float, str]] = deque()
         self._recent_lock = threading.Lock()
-        self._workers = ThreadPoolExecutor(max_workers=3, thread_name_prefix="ask")
+        self._workers = ThreadPoolExecutor(max_workers=ASK_WORKERS, thread_name_prefix="ask")
+        self._shots = ThreadPoolExecutor(max_workers=1, thread_name_prefix="shot")
         self._stop = threading.Event()
         self._paused = threading.Event()
         self._answering = 0  # сколько ответов сейчас пишется (каждый в своём окне)
@@ -81,13 +94,17 @@ class Pipeline:
     def stop(self) -> None:
         self._stop.set()
         self._workers.shutdown(wait=False, cancel_futures=True)
+        self._shots.shutdown(wait=False, cancel_futures=True)
         if self._audio_thread is not None:
             self._audio_thread.join(timeout=2)  # даём закрыть аудиопоток до выхода интерпретатора
 
     def update_config(self, cfg: dict) -> None:
         """Применяет настройки, не требующие перезагрузки модели (Gemini, пресет, скриншот, детектор)."""
+        changed = any(self._cfg[section] != cfg[section] for section in GEMINI_SECTIONS)
         self._cfg = cfg
-        self._gemini = None
+        if changed:  # а не на каждое перетаскивание окна: новый клиент — это полсекунды и новое соединение
+            self._gemini = None
+            self._workers.submit(self._warm_up_gemini)
 
     def set_paused(self, paused: bool) -> None:
         if paused:
@@ -142,6 +159,7 @@ class Pipeline:
             return
         self._audio_thread = threading.Thread(target=self._run_audio, name="audio", daemon=True)
         self._audio_thread.start()
+        self._warm_up_gemini()
 
         while not self._stop.is_set():
             try:
@@ -211,6 +229,7 @@ class Pipeline:
     # ---------- вопросы и ответы ----------
 
     def _on_candidate(self, lines: list[str], ended_at: float, phrase_id: int | None) -> None:
+        shot = self._shots.submit(self._grab_screenshot)  # снимок делается, пока модель проверяет вопрос
         heard = lines[-1]
         question = heard
         check_ms = None
@@ -240,7 +259,8 @@ class Pipeline:
             self._log_event(status="repeat", question=question, check_ms=check_ms, **record)
             return
         # Контекст для ответа берём свежий: пока шла проверка, могло прийти продолжение вопроса.
-        self._answer(question, ended_at, kind="auto", heard=heard, check_ms=check_ms, phrase_id=phrase_id)
+        self._answer(question, ended_at, kind="auto", heard=heard, check_ms=check_ms, phrase_id=phrase_id,
+                     screenshot=shot.result(), grab=False)
 
     def _is_repeat(self, question: str) -> bool:
         previous, asked_at = self._last_question
@@ -272,13 +292,10 @@ class Pipeline:
             self._log_event(status="error", error=self._gemini_error, **record)
             return
         answer_id = next(_answer_ids)
+        cancelled = _running[answer_id] = threading.Event()
 
-        shot_cfg = self._cfg["screenshot"]
-        if screenshot is None and grab and shot_cfg["enabled"]:
-            try:
-                screenshot = grab_screen(shot_cfg["monitor"], shot_cfg["max_side"], shot_cfg["jpeg_quality"])
-            except Exception:
-                log.exception("Скриншот не удался — спрашиваю без него")
+        if screenshot is None and grab:
+            screenshot = self._grab_screenshot()
         event_id = self._log_event(status="answering", model=self._cfg["gemini"]["answer_model"], **record)
         if event_id is not None and screenshot and self._cfg["history"]["save_screenshots"]:
             try:
@@ -296,13 +313,16 @@ class Pipeline:
         parts: list[str] = []
         failed = False
         try:
-            for chunk in gemini.answer(self._build_request(question, lines), screenshot):
-                if wait_ms is None:
-                    wait_ms = _ms_since(ended_at if ended_at is not None else started)
-                    if ended_at is not None:
-                        log.info("Первые слова ответа через %.2f c после конца фразы", wait_ms / 1000)
-                parts.append(chunk)
-                self._events.answer_chunk.emit(answer_id, chunk)
+            with closing(gemini.answer(self._build_request(question, lines), screenshot)) as stream:
+                for chunk in stream:
+                    if cancelled.is_set():
+                        break
+                    if wait_ms is None:
+                        wait_ms = _ms_since(ended_at if ended_at is not None else started)
+                        if ended_at is not None:
+                            log.info("Первые слова ответа через %.2f c после конца фразы", wait_ms / 1000)
+                    parts.append(chunk)
+                    self._events.answer_chunk.emit(answer_id, chunk)
         except Exception as e:
             failed = True
             log.exception("Ошибка ответа Gemini")
@@ -311,14 +331,25 @@ class Pipeline:
             self._log_update(event_id, status="error", error=str(e), answer="".join(parts), answer_ms=_ms_since(started))
         else:
             self._events.answer_done.emit(answer_id)
-            self._log_update(event_id, status="answered", answer="".join(parts), wait_ms=wait_ms,
-                             answer_ms=_ms_since(started))
+            self._log_update(event_id, status="stopped" if cancelled.is_set() else "answered", answer="".join(parts),
+                             wait_ms=wait_ms, answer_ms=_ms_since(started))
         finally:
+            _running.pop(answer_id, None)
             with self._answering_lock:
                 self._answering -= 1
                 still_answering = self._answering
         if not failed and not still_answering:
             self.refresh_status()
+
+    def _grab_screenshot(self) -> bytes | None:
+        shot_cfg = self._cfg["screenshot"]
+        if not shot_cfg["enabled"]:
+            return None
+        try:
+            return grab_screen(shot_cfg["monitor"], shot_cfg["max_side"], shot_cfg["jpeg_quality"])
+        except Exception:
+            log.exception("Скриншот не удался — спрашиваю без него")
+            return None
 
     def _build_request(self, question: str | None, lines: list[str]) -> str:
         transcript = "\n".join(f"— {line}" for line in lines) or "(пока ничего не распознано)"
@@ -330,6 +361,13 @@ class Pipeline:
                 "а если его нет — помоги с тем, что видно на скриншоте."
             )
         return f"Расшифровка последних реплик:\n{transcript}\n\n{task}"
+
+    def _warm_up_gemini(self) -> None:
+        """Создаёт клиент заранее, чтобы не тратить на это полсекунды, когда прозвучит вопрос."""
+        try:
+            self._gemini = self._gemini or GeminiClient(self._cfg)
+        except Exception as e:  # например, ещё нет ключа: об этом скажем при первом вопросе
+            log.info("Gemini пока не готов: %s", e)
 
     def _get_gemini(self) -> GeminiClient | None:
         if self._gemini is None:
